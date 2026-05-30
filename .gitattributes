@@ -1,0 +1,12 @@
+# Normalize line endings to LF in the repo, checkout as CRLF on Windows
+* text=auto eol=crlf
+
+# Binary files — no line-ending conversion
+*.mid   binary
+*.wav   binary
+*.ico   binary
+*.png   binary
+*.exe   binary
+*.dll   binary
+*.lib   binary
+*.pdb   binary

@@ -1,0 +1,35 @@
+# ============================================================
+#  Takefuji Groove Vault — .gitignore
+# ============================================================
+
+# ---- Build outputs ------------------------------------------
+Builds/VisualStudio2026/x64/
+Builds/VisualStudio2026/Win32/
+
+# ---- Visual Studio ------------------------------------------
+.vs/
+*.user
+*.suo
+*.aps
+
+# ---- JUCE auto-generated library code ----------------------
+# Re-generate with Projucer ("Save and Open in IDE")
+JuceLibraryCode/
+
+# ---- Media assets (managed outside this repo) --------------
+# MIDIファイル
+midi/*.mid
+Resources/midi/
+
+# プレビューWAV
+Resources/preview/
+
+# ---- Generated metadata ------------------------------------
+# metadata.json is generated from the GSS (Google Sheets Script)
+metadata.json
+Resources/metadata.json
+midi/metadata.json
+
+# ---- Claude Code internal files ----------------------------
+.claude/
+settings.local.json
