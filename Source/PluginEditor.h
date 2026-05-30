@@ -66,7 +66,7 @@ private:
     juce::ListBox patternList;
 
     //--- Keymap bar (SOURCE is always BFD3; only TARGET is selectable) ---------
-    juce::Label      targetMapLabel { {}, "TARGET:" };
+    juce::Label      targetMapLabel { {}, "Output Sound Library:" };
     juce::ComboBox   targetMapCombo;
     juce::TextButton editMapButton  { "EDIT MAP" };
 

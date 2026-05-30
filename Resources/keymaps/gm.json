@@ -1,5 +1,5 @@
 {
-  "name": "GM",
+  "name": "General MIDI (GM)",
   "note_to_part": {
     "35":  { "part": "kick",    "artic": "alt" },
     "36":  { "part": "kick",    "artic": "hit" },

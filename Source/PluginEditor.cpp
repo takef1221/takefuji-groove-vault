@@ -13,15 +13,16 @@
 //==============================================================================
 namespace Palette
 {
-    static const juce::Colour bgDark      { 0xff1a1a2e };
-    static const juce::Colour bgPanel     { 0xff16213e };
-    static const juce::Colour accent      { 0xff0f3460 };
-    static const juce::Colour highlight   { 0xffe94560 }; // STOP button active state
-    static const juce::Colour textPrimary { 0xffe0e0e0 };
-    static const juce::Colour textMuted   { 0xff8888aa };
-    static const juce::Colour rowEven     { 0xff1e1e2e };
-    static const juce::Colour rowOdd      { 0xff242436 };
-    static const juce::Colour rowSelected { 0xff0f3460 };
+    static const juce::Colour bgDark      { 0xffF5F5F5 }; // window / main background
+    static const juce::Colour bgPanel     { 0xffE8E8E8 }; // side filter panel
+    static const juce::Colour bgBottom    { 0xffE0E0E0 }; // bottom bars (preview / keymap)
+    static const juce::Colour accent      { 0xffDCDCDC }; // table header / outlines
+    static const juce::Colour highlight   { 0xff3D5A8A }; // selected row / PLAY active
+    static const juce::Colour textPrimary { 0xff333333 };
+    static const juce::Colour textMuted   { 0xff777777 };
+    static const juce::Colour rowEven     { 0xffFFFFFF };
+    static const juce::Colour rowOdd      { 0xffF0F0F0 };
+    static const juce::Colour rowSelected { 0xff3D5A8A };
 }
 
 //==============================================================================
@@ -53,7 +54,7 @@ public:
         // Drag handle: 2x3 dot grid on the left when hovered
         if (isHovered)
         {
-            g.setColour (Palette::textMuted.withAlpha (0.75f));
+            g.setColour ((isSelected ? juce::Colours::white : Palette::textMuted).withAlpha (0.75f));
             const float dotSize = 2.0f;
             const float hx = 4.0f;
             const float hy = static_cast<float> (getHeight()) / 2.0f - 5.5f;
@@ -80,7 +81,8 @@ public:
         for (auto& c : cols)
         {
             const int colW = static_cast<int> (w * c.frac);
-            g.setColour (c.primary ? Palette::textPrimary : Palette::textMuted);
+            g.setColour (isSelected ? juce::Colours::white
+                                    : (c.primary ? Palette::textPrimary : Palette::textMuted));
             g.drawText (c.text,
                         bounds.removeFromLeft (static_cast<float> (colW)).toNearestInt(),
                         juce::Justification::centredLeft, true);
@@ -224,12 +226,13 @@ public:
     {
         ed.setInputRestrictions (3, "0123456789");
         ed.setFont (juce::Font (juce::FontOptions (12.f)));
-        ed.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff16213e));
-        ed.setColour (juce::TextEditor::textColourId,       juce::Colour (0xffe0e0e0));
+        ed.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xffFFFFFF));
+        ed.setColour (juce::TextEditor::textColourId,       juce::Colour (0xff333333));
+        ed.setColour (juce::TextEditor::outlineColourId,    juce::Colour (0xffBBBBBB));
         addAndMakeVisible (ed);
 
         lbl.setFont (juce::Font (juce::FontOptions (12.f)));
-        lbl.setColour (juce::Label::textColourId, juce::Colour (0xff8888aa));
+        lbl.setColour (juce::Label::textColourId, juce::Colour (0xff777777));
         addAndMakeVisible (lbl);
     }
 
@@ -289,7 +292,7 @@ public:
 
         // Table
         table.setModel (this);
-        table.setColour (juce::ListBox::backgroundColourId, juce::Colour (0xff1e1e2e));
+        table.setColour (juce::ListBox::backgroundColourId, juce::Colour (0xffFFFFFF));
         table.setRowHeight (26);
         table.getHeader().addColumn ("Instrument (BFD3)", 1, 150);
         table.getHeader().addColumn ("BFD3 Note",         2, 200);
@@ -302,8 +305,8 @@ public:
         {
             btn.setButtonText (label);
             btn.onClick = std::move (fn);
-            btn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff0f3460));
-            btn.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffe0e0e0));
+            btn.setColour (juce::TextButton::buttonColourId,  juce::Colour (0xffFFFFFF));
+            btn.setColour (juce::TextButton::textColourOffId, juce::Colour (0xff333333));
             addAndMakeVisible (btn);
         };
 
@@ -342,9 +345,9 @@ private:
 
     void paintRowBackground (juce::Graphics& g, int row, int, int, bool selected) override
     {
-        g.fillAll (selected ? juce::Colour (0xff0f3460)
-                            : (row % 2 == 0 ? juce::Colour (0xff1e1e2e)
-                                            : juce::Colour (0xff242436)));
+        g.fillAll (selected ? juce::Colour (0xff3D5A8A)
+                            : (row % 2 == 0 ? juce::Colour (0xffFFFFFF)
+                                            : juce::Colour (0xffF0F0F0)));
     }
 
     void paintCell (juce::Graphics& g, int row, int col, int w, int h, bool) override
@@ -364,7 +367,7 @@ private:
             if (name.isEmpty())
                 name = (row < srcMap.dstKeys.size()) ? srcMap.dstKeys[row] : "?";
 
-            g.setColour (juce::Colour (0xffe0e0e0));
+            g.setColour (juce::Colour (0xff333333));
             g.drawText (name, 4, 0, w - 4, h, juce::Justification::centredLeft, true);
         }
         else if (col == 1)
@@ -372,7 +375,7 @@ private:
             // Source Note column: "24 / C0 (Kick)"
             int srcNote = (row < srcMap.dstNotes.size()) ? srcMap.dstNotes[row] : -1;
             juce::String text = noteDisplayStr (srcNote, bfd3PartName (srcNote));
-            g.setColour (juce::Colour (0xffe0e0e0));
+            g.setColour (juce::Colour (0xff333333));
             g.drawText (text, 4, 0, w - 4, h, juce::Justification::centredLeft, true);
         }
         // col == 2 (Target Note) is handled by NoteDisplayCell via refreshComponentForCell
@@ -587,10 +590,10 @@ TakefujiGrooveVaultAudioProcessorEditor::TakefujiGrooveVaultAudioProcessorEditor
     previewLabel.setColour (juce::Label::textColourId, Palette::textMuted);
     addAndMakeVisible (previewLabel);
 
-    playButton.setColour (juce::TextButton::buttonColourId,   Palette::accent);
+    playButton.setColour (juce::TextButton::buttonColourId,   juce::Colour (0xff333333));
     playButton.setColour (juce::TextButton::buttonOnColourId, Palette::highlight);
-    playButton.setColour (juce::TextButton::textColourOffId,  Palette::textPrimary);
-    playButton.setColour (juce::TextButton::textColourOnId,   Palette::textPrimary);
+    playButton.setColour (juce::TextButton::textColourOffId,  juce::Colours::white);
+    playButton.setColour (juce::TextButton::textColourOnId,   juce::Colours::white);
     // PLAY button starts disabled; selectedRowsChanged() enables it when a
     // pattern with a preview file is selected.
     playButton.setEnabled (false);
@@ -607,13 +610,13 @@ TakefujiGrooveVaultAudioProcessorEditor::TakefujiGrooveVaultAudioProcessorEditor
     targetMapLabel.setJustificationType (juce::Justification::centredRight);
     addAndMakeVisible (targetMapLabel);
 
-    targetMapCombo.setColour (juce::ComboBox::backgroundColourId, Palette::bgDark);
+    targetMapCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colours::white);
     targetMapCombo.setColour (juce::ComboBox::textColourId,       Palette::textPrimary);
-    targetMapCombo.setColour (juce::ComboBox::outlineColourId,    Palette::accent);
+    targetMapCombo.setColour (juce::ComboBox::outlineColourId,    juce::Colour (0xffBBBBBB));
     targetMapCombo.addListener (this);
     addAndMakeVisible (targetMapCombo);
 
-    editMapButton.setColour (juce::TextButton::buttonColourId,  Palette::accent);
+    editMapButton.setColour (juce::TextButton::buttonColourId,  juce::Colours::white);
     editMapButton.setColour (juce::TextButton::textColourOffId, Palette::textPrimary);
     editMapButton.onClick = [this] { openKeyMapEditor(); };
     addAndMakeVisible (editMapButton);
@@ -670,12 +673,12 @@ void TakefujiGrooveVaultAudioProcessorEditor::paint (juce::Graphics& g)
     }
 
     // Keymap bar background (above preview bar, right area only)
-    g.setColour (Palette::bgPanel.brighter (0.08f));
+    g.setColour (Palette::bgBottom);
     g.fillRect (kFilterWidth, getHeight() - kPreviewHeight - kKeyMapHeight,
                 getWidth() - kFilterWidth, kKeyMapHeight);
 
     // Preview bar background
-    g.setColour (Palette::bgPanel);
+    g.setColour (Palette::bgBottom);
     g.fillRect (0, getHeight() - kPreviewHeight, getWidth(), kPreviewHeight);
 
     // Playback progress bar
@@ -683,12 +686,12 @@ void TakefujiGrooveVaultAudioProcessorEditor::paint (juce::Graphics& g)
     {
         const int barH = 6;
         auto bar = progressBarBounds.withSizeKeepingCentre (progressBarBounds.getWidth(), barH).toFloat();
-        g.setColour (Palette::accent.brighter (0.3f));
+        g.setColour (juce::Colour (0xffCCCCCC)); // progress track
         g.fillRoundedRectangle (bar, barH / 2.0f);
         if (playbackProgress > 0.0)
         {
             auto fill = bar.withWidth (bar.getWidth() * (float) playbackProgress);
-            g.setColour (lastPlayingState ? Palette::highlight : Palette::textMuted);
+            g.setColour (Palette::highlight); // #3D5A8A fill
             g.fillRoundedRectangle (fill, barH / 2.0f);
         }
     }
@@ -718,8 +721,8 @@ void TakefujiGrooveVaultAudioProcessorEditor::resized()
         auto kmRight = area.withTrimmedLeft (kFilterWidth)
                            .removeFromBottom (kKeyMapHeight)
                            .reduced (10, 6);
-        targetMapLabel.setBounds (kmRight.removeFromLeft (58));
-        targetMapCombo.setBounds (kmRight.removeFromLeft (160));
+        targetMapLabel.setBounds (kmRight.removeFromLeft (130));
+        targetMapCombo.setBounds (kmRight.removeFromLeft (210));
         kmRight.removeFromLeft (14);
         editMapButton.setBounds  (kmRight.removeFromLeft (90));
     }
@@ -1012,7 +1015,7 @@ void TakefujiGrooveVaultAudioProcessorEditor::openKeyMapEditor()
     opts.dialogTitle              = "Edit Keymap  [ " + maps[srcIdx].name
                                     + " -> " + maps[dstIdx].name + " ]";
     opts.componentToCentreAround  = this;
-    opts.dialogBackgroundColour   = juce::Colour (0xff1a1a2e);
+    opts.dialogBackgroundColour   = juce::Colour (0xffF5F5F5);
     opts.escapeKeyTriggersCloseButton = true;
     opts.useNativeTitleBar        = false;
     opts.resizable                = true;

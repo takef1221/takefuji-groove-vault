@@ -15,10 +15,8 @@ Builds/
 # Re-generate with Projucer ("Save and Open in IDE")
 JuceLibraryCode/
 
-# ---- Media assets (managed outside this repo) --------------
-# MIDIファイル
-midi/*.mid
-Resources/midi/
+# ---- Legacy midi/ folder (canonical location is Resources/) -
+midi/
 
 # プレビューWAV
 Resources/preview/
