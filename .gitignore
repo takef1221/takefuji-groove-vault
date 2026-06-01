@@ -16,16 +16,16 @@ Builds/
 JuceLibraryCode/
 
 # ---- Legacy midi/ folder (canonical location is Resources/) -
-midi/
+# midi/
 
 # プレビューWAV
 Resources/preview/
 
 # ---- Generated metadata ------------------------------------
 # metadata.json is generated from the GSS (Google Sheets Script)
-metadata.json
-Resources/metadata.json
-midi/metadata.json
+# metadata.json
+# Resources/metadata.json
+# midi/metadata.json
 
 # ---- Claude Code internal files ----------------------------
 .claude/
