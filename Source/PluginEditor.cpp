@@ -564,9 +564,9 @@ TakefujiGrooveVaultAudioProcessorEditor::TakefujiGrooveVaultAudioProcessorEditor
     {
         ed.setText (init, false);
         ed.setInputRestrictions (4, "0123456789");
-        ed.setColour (juce::TextEditor::backgroundColourId, Palette::bgDark);
-        ed.setColour (juce::TextEditor::textColourId,       Palette::textPrimary);
-        ed.setColour (juce::TextEditor::outlineColourId,    Palette::accent);
+        ed.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xffFFFFFF));
+        ed.setColour (juce::TextEditor::textColourId,       juce::Colour (0xff333333));
+        ed.setColour (juce::TextEditor::outlineColourId,    juce::Colour (0xffBBBBBB));
         ed.setFont (juce::Font (juce::FontOptions (13.f)));
         ed.onTextChange = [this] { applyFilters(); };
         addAndMakeVisible (ed);
@@ -626,11 +626,36 @@ TakefujiGrooveVaultAudioProcessorEditor::TakefujiGrooveVaultAudioProcessorEditor
     applyFilters();
 
     startTimerHz (10); // poll isPreviewPlaying() at 10 Hz to update button label
+
+    // Register download-complete callback (runs on message thread)
+    {
+        juce::Component::SafePointer<TakefujiGrooveVaultAudioProcessorEditor> safe (this);
+        audioProcessor.setPreviewReadyCallback ([safe] (bool offline)
+        {
+            if (safe == nullptr) return;
+            auto* ed = safe.getComponent();
+            ed->playButton.setEnabled (true);
+            ed->playButton.setButtonText (ed->audioProcessor.isPreviewPlaying() ? "STOP" : "PLAY");
+            if (offline)
+                juce::AlertWindow::showMessageBoxAsync (
+                    juce::MessageBoxIconType::WarningIcon,
+                    "Preview Error",
+                    juce::String (juce::CharPointer_UTF8 (
+                        "\xe3\x83\x97\xe3\x83\xac\xe3\x83\x93\xe3\x83\xa5\xe3\x83\xbc\xe3\x82\x92"
+                        "\xe5\x86\x8d\xe7\x94\x9f\xe3\x81\xa7\xe3\x81\x8d\xe3\x81\xbe\xe3\x81\x9b"
+                        "\xe3\x82\x93\xe3\x80\x82\x0a"
+                        "\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xbf\xe3\x83\xbc\xe3\x83\x8d\xe3\x83\x83"
+                        "\xe3\x83\x88\xe6\x8e\xa5\xe7\xb6\x9a\xe3\x82\x92\xe7\xa2\xba\xe8\xaa\x8d"
+                        "\xe3\x81\x97\xe3\x81\xa6\xe3\x81\x8f\xe3\x81\xa0\xe3\x81\x95\xe3\x81\x84"
+                        "\xe3\x80\x82")));
+        });
+    }
 }
 
 TakefujiGrooveVaultAudioProcessorEditor::~TakefujiGrooveVaultAudioProcessorEditor()
 {
     stopTimer();
+    audioProcessor.setPreviewReadyCallback (nullptr); // prevent callback on destroyed editor
     audioProcessor.stopPreview();
     patternList.setModel (nullptr);
 }
@@ -889,19 +914,33 @@ void TakefujiGrooveVaultAudioProcessorEditor::togglePreview()
         return;
     }
 
-    // Preview files live in Resources/preview/ in both dev and installed layouts.
-    auto resourcesDir = audioProcessor.getResourcesDirectory();
-    auto previewFile  = resourcesDir.getChildFile ("preview").getChildFile (p->preview);
+    if (audioProcessor.isPreviewLoading())
+    {
+        juce::Logger::writeToLog ("[GrooveVault] togglePreview: download in progress, ignoring");
+        return;
+    }
 
-    juce::Logger::writeToLog ("[GrooveVault] togglePreview: resourcesDir=" + resourcesDir.getFullPathName());
-    juce::Logger::writeToLog ("[GrooveVault] togglePreview: previewFile="  + previewFile.getFullPathName()
-                              + "  exists=" + juce::String (previewFile.existsAsFile() ? "YES" : "NO"));
+    // Show loading state; callback or cache-hit path will restore it
+    playButton.setEnabled (false);
+    playButton.setButtonText ("LOADING...");
 
-    audioProcessor.startPreview (previewFile);
+    juce::Logger::writeToLog ("[GrooveVault] togglePreview: startPreviewFromUrl -> " + p->preview);
+    audioProcessor.startPreviewFromUrl (p->preview);
+
+    if (!audioProcessor.isPreviewLoading())
+    {
+        // Cache hit: startPreview() was called synchronously, no callback will fire
+        playButton.setEnabled (true);
+        // timerCallback will update the button text at the next 100 ms tick
+    }
 }
 
 void TakefujiGrooveVaultAudioProcessorEditor::timerCallback()
 {
+    // Don't touch button state while download is in progress
+    if (audioProcessor.isPreviewLoading())
+        return;
+
     const bool playing     = audioProcessor.isPreviewPlaying();
     const bool stateChange = (playing != lastPlayingState);
     lastPlayingState = playing;
@@ -1054,8 +1093,25 @@ void TakefujiGrooveVaultAudioProcessorEditor::applyFilters()
 
     for (const auto& p : audioProcessor.getPatterns())
     {
-        if (sourceSel.isNotEmpty() && p.source_id  != sourceSel)  continue;
-        if (meterSel    != "All" && p.meter    != meterSel)    continue;
+        if (sourceSel.isNotEmpty() && p.source_id != sourceSel) continue;
+        if (meterSel != "All")
+        {
+            auto meterParts = juce::StringArray::fromTokens (p.meter, ",", "");
+            meterParts.trim();
+            if (meterSel == "Odd Meter")
+            {
+                // Hit if any part is NOT 4/4
+                bool hasOdd = false;
+                for (const auto& m : meterParts)
+                    if (m != "4/4") { hasOdd = true; break; }
+                if (!hasOdd) continue;
+            }
+            else
+            {
+                // Hit if the selected meter is one of the comma-separated parts
+                if (!meterParts.contains (meterSel)) continue;
+            }
+        }
         if (categorySel != "All" && p.category != categorySel) continue;
         if (vibeSel     != "All" && !p.vibe.contains (vibeSel)) continue;
         if (densitySel  != "All" && p.density  != densitySel)  continue;
@@ -1097,7 +1153,13 @@ void TakefujiGrooveVaultAudioProcessorEditor::populateFilterOptions()
     {
         if (p.source_id.isNotEmpty() && !sourceIds.contains (p.source_id))
             sourceIds.add (p.source_id);
-        if (!meters.contains     (p.meter))    meters.add     (p.meter);
+        // Split comma-separated meters (e.g. "7/4,6/4") into individual entries
+        for (const auto& m : juce::StringArray::fromTokens (p.meter, ",", ""))
+        {
+            auto trimmed = m.trim();
+            if (trimmed.isNotEmpty() && !meters.contains (trimmed))
+                meters.add (trimmed);
+        }
         if (!categories.contains (p.category)) categories.add (p.category);
         if (!densities.contains  (p.density))  densities.add  (p.density);
         for (const auto& v : p.vibe)
@@ -1137,7 +1199,14 @@ void TakefujiGrooveVaultAudioProcessorEditor::populateFilterOptions()
         cb.setSelectedId (1, juce::dontSendNotification);
     };
 
-    populate (meterFilter,    meters);
+    // Meter filter: sorted individual meters + "Odd Meter" fixed at end
+    meterFilter.clear (juce::dontSendNotification);
+    meterFilter.addItem ("All", 1);
+    for (int i = 0; i < meters.size(); ++i)
+        meterFilter.addItem (meters[i], i + 2);
+    meterFilter.addItem ("Odd Meter", meters.size() + 2);
+    meterFilter.setSelectedId (1, juce::dontSendNotification);
+
     populate (categoryFilter, categories);
     populate (vibeFilter,     vibes);
     populate (densityFilter,  densities);

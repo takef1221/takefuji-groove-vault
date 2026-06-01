@@ -24,6 +24,7 @@ TakefujiGrooveVaultAudioProcessor::TakefujiGrooveVaultAudioProcessor()
     // to ensurePreviewDevice() called on first PLAY click.  This avoids
     // competing with Studio One for the audio device during plugin load.
     formatManager.registerBasicFormats();
+    processorAlive = std::make_shared<std::atomic<bool>> (true);
 
     loadPatterns();
     loadKeymaps();
@@ -31,6 +32,8 @@ TakefujiGrooveVaultAudioProcessor::TakefujiGrooveVaultAudioProcessor()
 
 TakefujiGrooveVaultAudioProcessor::~TakefujiGrooveVaultAudioProcessor()
 {
+    *processorAlive = false; // signal any in-flight background thread
+
     // Tear down audio engine before deleting reader source
     transportSource.stop();
     audioSourcePlayer.setSource (nullptr);
@@ -585,6 +588,85 @@ double TakefujiGrooveVaultAudioProcessor::getPlaybackPosition() const
     const double length = transportSource.getLengthInSeconds();
     if (length <= 0.0) return 0.0;
     return juce::jlimit (0.0, 1.0, transportSource.getCurrentPosition() / length);
+}
+
+void TakefujiGrooveVaultAudioProcessor::startPreviewFromUrl (const juce::String& filename)
+{
+    if (filename.isEmpty()) return;
+
+    juce::Logger::writeToLog ("[GrooveVault] startPreviewFromUrl: " + filename);
+    previewLoading = true;
+
+    juce::String urlStr  = juce::String (kPreviewBaseUrl) + filename;
+    auto         alive   = processorAlive; // shared_ptr keeps flag valid after processor destroyed
+
+    juce::Thread::launch ([this, urlStr, alive]()
+    {
+        juce::Logger::writeToLog ("[GrooveVault] streamThread: GET " + urlStr);
+
+        juce::MemoryBlock block;
+
+        auto stream = juce::URL (urlStr).createInputStream (
+            juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
+                .withConnectionTimeoutMs (10000));
+        bool ok = (stream != nullptr);
+        if (ok) { juce::MemoryOutputStream mos (block, false); mos.writeFromInputStream (*stream, -1); }
+
+        if (!ok || block.isEmpty())
+        {
+            juce::Logger::writeToLog ("[GrooveVault] streamThread: offline or download failed");
+            previewLoading = false;
+            juce::MessageManager::callAsync ([this, alive]()
+            {
+                if (!alive->load()) return;
+                if (previewReadyCallback) previewReadyCallback (true);
+            });
+            return;
+        }
+
+        juce::Logger::writeToLog ("[GrooveVault] streamThread: loaded "
+                                  + juce::String (block.getSize()) + " bytes");
+        previewLoading = false;
+
+        juce::MessageManager::callAsync ([this, alive, blk = std::move (block)]() mutable
+        {
+            if (!alive->load()) return;
+            startPreviewInMemory (blk);
+            if (previewReadyCallback) previewReadyCallback (false);
+        });
+    });
+}
+
+void TakefujiGrooveVaultAudioProcessor::startPreviewInMemory (const juce::MemoryBlock& block)
+{
+    // Stop and clear current playback before swapping buffer
+    transportSource.stop();
+    transportSource.setSource (nullptr);
+    readerSource.reset();
+
+    if (!ensurePreviewDevice()) return;
+
+    // Store block as member so the MemoryInputStream pointer stays valid
+    previewMemoryBlock = block;
+
+    auto stream = std::make_unique<juce::MemoryInputStream> (previewMemoryBlock, false);
+    auto* reader = formatManager.createReaderFor (std::move (stream));
+
+    if (reader == nullptr)
+    {
+        juce::Logger::writeToLog ("[GrooveVault] startPreviewInMemory: unsupported format");
+        return;
+    }
+
+    juce::Logger::writeToLog ("[GrooveVault] startPreviewInMemory: sampleRate="
+                              + juce::String (reader->sampleRate)
+                              + "  lengthInSamples="
+                              + juce::String (reader->lengthInSamples));
+
+    readerSource = std::make_unique<juce::AudioFormatReaderSource> (reader, true);
+    transportSource.setSource (readerSource.get(), 0, nullptr, reader->sampleRate);
+    transportSource.start();
+    juce::Logger::writeToLog ("[GrooveVault] startPreviewInMemory: playback started");
 }
 
 //==============================================================================

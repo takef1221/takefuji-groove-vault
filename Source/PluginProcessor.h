@@ -6,6 +6,7 @@
 */
 
 #pragma once
+
 #include <JuceHeader.h>
 
 struct PatternInfo
@@ -120,11 +121,20 @@ public:
                                         const KeyMapEntry& srcMap,
                                         const KeyMapEntry& dstMap);
 
-    // ---------- Preview audio ----------
+    // ---------- Preview audio (local) ----------
     void startPreview (const juce::File& audioFile);
     void stopPreview();
     bool   isPreviewPlaying()    const;
     double getPlaybackPosition() const;
+
+    // ---------- Preview audio (URL download with temp-file cache) ----------
+    static constexpr const char* kPreviewBaseUrl =
+        "https://github.com/takef1221/takefuji-groove-vault/releases/download/preview-assets/";
+
+    using PreviewReadyCallback = std::function<void(bool offline)>;
+    void setPreviewReadyCallback (PreviewReadyCallback cb) { previewReadyCallback = std::move (cb); }
+    void startPreviewFromUrl (const juce::String& filename);
+    bool isPreviewLoading()  const noexcept { return previewLoading.load(); }
 
 private:
     juce::Array<PatternInfo> patterns;
@@ -132,6 +142,13 @@ private:
 
     // Debug file logger
     std::unique_ptr<juce::FileLogger> fileLogger;
+
+    // URL in-memory streaming
+    PreviewReadyCallback            previewReadyCallback;
+    std::atomic<bool>               previewLoading { false };
+    juce::MemoryBlock               previewMemoryBlock;
+    std::shared_ptr<std::atomic<bool>> processorAlive;
+    void startPreviewInMemory (const juce::MemoryBlock& block);
 
     // Preview audio engine (lazy-initialized on first PLAY click)
     bool ensurePreviewDevice();
