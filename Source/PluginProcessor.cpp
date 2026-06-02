@@ -604,12 +604,26 @@ void TakefujiGrooveVaultAudioProcessor::startPreviewFromUrl (const juce::String&
     if (filename.isEmpty()) return;
 
     juce::Logger::writeToLog ("[GrooveVault] startPreviewFromUrl: " + filename);
+
+    // Initialise the audio device now so it is ready when audio arrives.
+    // On first call this takes a moment; subsequent calls return immediately.
+    ensurePreviewDevice();
+
+    // Cache hit: same file already in memory — replay without downloading.
+    if (filename == cachedPreviewFilename && previewMemoryBlock.getSize() > 0)
+    {
+        juce::Logger::writeToLog ("[GrooveVault] startPreviewFromUrl: cache hit, replaying from memory");
+        startPreviewInMemory (previewMemoryBlock);
+        if (previewReadyCallback) previewReadyCallback (false);
+        return;
+    }
+
     previewLoading = true;
 
     juce::String urlStr  = juce::String (kPreviewBaseUrl) + filename;
     auto         alive   = processorAlive; // shared_ptr keeps flag valid after processor destroyed
 
-    juce::Thread::launch ([this, urlStr, alive]()
+    juce::Thread::launch ([this, urlStr, filename, alive]()
     {
         juce::Logger::writeToLog ("[GrooveVault] streamThread: GET " + urlStr);
 
@@ -637,9 +651,10 @@ void TakefujiGrooveVaultAudioProcessor::startPreviewFromUrl (const juce::String&
                                   + juce::String (block.getSize()) + " bytes");
         previewLoading = false;
 
-        juce::MessageManager::callAsync ([this, alive, blk = std::move (block)]() mutable
+        juce::MessageManager::callAsync ([this, alive, filename, blk = std::move (block)]() mutable
         {
             if (!alive->load()) return;
+            cachedPreviewFilename = filename;
             startPreviewInMemory (blk);
             if (previewReadyCallback) previewReadyCallback (false);
         });

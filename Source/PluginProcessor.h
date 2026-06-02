@@ -147,6 +147,7 @@ private:
     PreviewReadyCallback            previewReadyCallback;
     std::atomic<bool>               previewLoading { false };
     juce::MemoryBlock               previewMemoryBlock;
+    juce::String                    cachedPreviewFilename;
     std::shared_ptr<std::atomic<bool>> processorAlive;
     void startPreviewInMemory (const juce::MemoryBlock& block);
 
