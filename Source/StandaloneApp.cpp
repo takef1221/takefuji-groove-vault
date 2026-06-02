@@ -300,6 +300,21 @@ public:
     //--------------------------------------------------------------------------
     void initialise (const juce::String&) override
     {
+        // デバッグ用ファイルログ
+        {
+            auto licFile = getLicenseFile();
+            bool saved   = hasSavedLicense();
+            juce::String log;
+            log << "initialise() called\n"
+                << "hasSavedLicense = " << (saved ? "true" : "false") << "\n"
+                << "licenseFile path = " << licFile.getFullPathName() << "\n"
+                << "licenseFile exists = " << (licFile.existsAsFile() ? "true" : "false") << "\n";
+
+            juce::File("/tmp/tgv_debug.txt").replaceWithText(log);
+            juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
+                .getChildFile("tgv_debug.txt").replaceWithText(log);
+        }
+
         if (hasSavedLicense())
         {
             launchMainWindow();

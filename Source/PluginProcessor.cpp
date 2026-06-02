@@ -65,6 +65,15 @@ juce::File TakefujiGrooveVaultAudioProcessor::getResourcesDirectory() const
     juce::Logger::writeToLog ("[GrooveVault] exe path = " + exeFile.getFullPathName());
     juce::Logger::writeToLog ("[GrooveVault] app path = " + appFile.getFullPathName());
 
+    // Mac: .app バンドル内 Contents/MacOS/ の隣 Contents/Resources/
+    juce::File mac = exeFile.getParentDirectory().getSiblingFile ("Resources");
+    logCand (mac);
+    if (mac.getChildFile ("metadata.json").existsAsFile())
+    {
+        juce::Logger::writeToLog ("[GrooveVault] resources found = " + mac.getFullPathName() + "  [Mac-bundle]");
+        cachedResult = mac; return cachedResult;
+    }
+
     // A0: Standalone -- Resources/ sits next to the exe
     juce::File a0 = exeFile.getParentDirectory().getChildFile ("Resources");
     logCand (a0);
