@@ -300,6 +300,8 @@ public:
     //--------------------------------------------------------------------------
     void initialise (const juce::String&) override
     {
+        juce::Logger::writeToLog ("DEBUG: hasSavedLicense = " + juce::String (hasSavedLicense() ? "true" : "false"));
+
         if (hasSavedLicense())
         {
             launchMainWindow();
@@ -311,6 +313,7 @@ public:
         // create a top-level window.
         juce::MessageManager::callAsync ([this]()
         {
+            juce::Logger::writeToLog ("DEBUG: showing LicenseDialog");
             new LicenseDialog ([this] (bool activated)
             {
                 if (!activated) { quit(); return; }
