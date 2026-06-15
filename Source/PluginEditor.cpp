@@ -153,38 +153,26 @@ void MidiRollComponent::paint (juce::Graphics& g)
 
     if (totalTicks <= 0.0 || ppq <= 0) return;
 
-    // Tick-space geometry: 1 page = kBarsPerPage bars while playing.
-    // While stopped (no playhead), show the whole pattern on a single page.
+    // Always display the whole pattern — no playhead tracking / paging.
     const double ticksPerBeat = (double)ppq * (4.0 / (double)beatUnit);
-    const double ticksPerBar  = ticksPerBeat * (double)beatsPerBar;
-    const bool   isPlaying    = playheadPos >= 0.0;
-    const double ticksPerPage = isPlaying ? (ticksPerBar * (double)kBarsPerPage) : totalTicks;
     const double totalBeats   = totalTicks / ticksPerBeat;
     const int    numBeats     = juce::jmax (1, (int)std::ceil (totalBeats));
 
-    // Current page window in tick space
-    const double pageStartTick = (double)currentPage * ticksPerPage;
-    const double pageEndTick   = pageStartTick + ticksPerPage;
+    constexpr double pageStart = 0.0;
+    constexpr double pageEnd   = 1.0;
+    constexpr double pageScale = 1.0;
 
-    // Convert to 0.0-1.0 for note-position comparisons
-    const double pageStart = pageStartTick / totalTicks;
-    const double pageEnd   = pageEndTick   / totalTicks; // may exceed 1.0 for last page
-    // Scale: pattern-relative pos → page-relative pos (0.0 = left edge, 1.0 = right edge)
-    const double pageScale = totalTicks / ticksPerPage;
-
-    // Beat grid lines — only those within the current page tick window
+    // Beat grid lines across the whole pattern
     for (int b = 0; b <= numBeats; b++)
     {
         const double beatTick = (double)b * ticksPerBeat;
-        if (beatTick < pageStartTick - 0.5 || beatTick > pageEndTick + 0.5) continue;
-        const float x     = (float)labelW
-                            + (float)((beatTick - pageStartTick) / ticksPerPage) * gridW;
+        const float x     = (float)labelW + (float)(beatTick / totalTicks) * gridW;
         const bool  isBar = (b % beatsPerBar == 0);
         g.setColour (isBar ? juce::Colour (0x22000000) : juce::Colour (0x0E000000));
         g.drawLine (x, 0.0f, x, (float)bounds.getHeight(), isBar ? 1.0f : 0.5f);
     }
 
-    // Notes — only those within [pageStart, pageEnd)
+    // Notes across the whole pattern
     const float noteW = 4.0f;
     g.setColour (Palette::highlight);
     for (int r = 0; r < rows && r < (int)currentNotes.size(); r++)
@@ -199,16 +187,6 @@ void MidiRollComponent::paint (juce::Graphics& g)
             float nH = rowH - 4.0f;
             g.fillRoundedRectangle (x, y, noteW, nH, 1.5f);
         }
-    }
-
-    // Playhead in page-relative coordinates
-    if (playheadPos >= 0.0 && playheadPos <= 1.0)
-    {
-        const double pageRel = juce::jlimit (0.0, 1.0,
-                                             (playheadPos - pageStart) * pageScale);
-        const float px = (float)labelW + (float)pageRel * gridW;
-        g.setColour (juce::Colour (0xCC000000));
-        g.drawLine (px, 0.0f, px, (float)bounds.getHeight(), 1.5f);
     }
 }
 
@@ -1237,7 +1215,6 @@ void TakefujiGrooveVaultAudioProcessorEditor::selectedRowsChanged (int lastRow)
     playbackProgress  = 0.0;
     lastPlayingState  = false;
     loadingRowIndex   = -1;
-    midiRollComponent.setPlayheadSec (-1.0); // hide playhead on row switch
     previewLabel.setColour (juce::Label::textColourId, Palette::textMuted);
 
     if (lastRow >= 0 && lastRow < filteredPatterns.size())
@@ -1398,17 +1375,14 @@ void TakefujiGrooveVaultAudioProcessorEditor::timerCallback()
     const bool stateChange = (playing != lastPlayingState);
     lastPlayingState = playing;
 
-    // --- Progress bar + playhead ---
+    // --- Progress bar ---
     if (playing)
     {
         playbackProgress = audioProcessor.getPlaybackPosition();
-        // Use raw audio seconds so MIDI roll can align to MIDI tempo
-        midiRollComponent.setPlayheadSec (audioProcessor.getPlaybackCurrentSec());
     }
     else if (stateChange)
     {
         playbackProgress = 0.0;
-        midiRollComponent.setPlayheadSec (-1.0); // hide on stop
     }
 
     // --- Refresh row play icons on state change ---
