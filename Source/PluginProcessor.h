@@ -135,6 +135,8 @@ public:
     void setPreviewReadyCallback (PreviewReadyCallback cb) { previewReadyCallback = std::move (cb); }
     void startPreviewFromUrl (const juce::String& filename);
     bool isPreviewLoading()  const noexcept { return previewLoading.load(); }
+    void setPreviewVolume (float gain) { transportSource.setGain (gain); }
+    double getPlaybackCurrentSec() const noexcept { return transportSource.getCurrentPosition(); }
 
 private:
     juce::Array<PatternInfo> patterns;

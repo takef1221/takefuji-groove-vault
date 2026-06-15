@@ -13,31 +13,228 @@
 //==============================================================================
 namespace Palette
 {
-    static const juce::Colour bgDark      { 0xffF5F5F5 }; // window / main background
-    static const juce::Colour bgPanel     { 0xffE8E8E8 }; // side filter panel
-    static const juce::Colour bgBottom    { 0xffE0E0E0 }; // bottom bars (preview / keymap)
-    static const juce::Colour accent      { 0xffDCDCDC }; // table header / outlines
-    static const juce::Colour highlight   { 0xff3D5A8A }; // selected row / PLAY active
-    static const juce::Colour textPrimary { 0xff333333 };
-    static const juce::Colour textMuted   { 0xff777777 };
-    static const juce::Colour rowEven     { 0xffFFFFFF };
-    static const juce::Colour rowOdd      { 0xffF0F0F0 };
-    static const juce::Colour rowSelected { 0xff3D5A8A };
+    static const juce::Colour bgDark       { 0xFFFFFFFF }; // BG_PRIMARY: white
+    static const juce::Colour bgPanel      { 0xFFF5F5F3 }; // BG_SECONDARY: sidebar / hover
+    static const juce::Colour bgBottom     { 0xFFF5F5F3 }; // BG_SECONDARY: bottom bars
+    static const juce::Colour accent       { 0xFFF5F5F3 }; // header strip background
+    static const juce::Colour highlight    { 0xFF639922 }; // ACCENT_GREEN
+    static const juce::Colour textPrimary  { 0xFF1A1A1A }; // TEXT_PRIMARY
+    static const juce::Colour textMuted    { 0xFF666666 }; // TEXT_SECONDARY
+    static const juce::Colour textTertiary { 0xFF999999 }; // TEXT_TERTIARY
+    static const juce::Colour borderSubtle { 0x26000000 }; // BORDER_SUBTLE
+    static const juce::Colour borderNormal { 0x4D000000 }; // BORDER_NORMAL
+    static const juce::Colour rowEven      { 0xFFFFFFFF }; // BG_PRIMARY
+    static const juce::Colour rowOdd       { 0xFFF5F5F3 }; // BG_SECONDARY
+    static const juce::Colour rowSelected  { 0xFFEAF3DE }; // BG_SELECTED (light green)
+}
+
+//==============================================================================
+// Pattern list column layout
+//
+// Shared by PatternRowComponent::paint() (row cells) and
+// TakefujiGrooveVaultAudioProcessorEditor::paint() (column headers) so both
+// stay in sync as the window is resized.
+//==============================================================================
+struct ColumnLayout
+{
+    int  nameW, meterW, categoryW, vibeW, densityW, bpmW;
+    bool showVibe, showDensity;
+};
+
+// textW = width available for the NAME..BPM columns (list width minus the
+// fixed play-button and star columns and the row insets).
+static ColumnLayout computeColumnLayout (int textW)
+{
+    constexpr int kMinName     = 100;
+    constexpr int kMinMeter    = 40;
+    constexpr int kMinCategory = 60;
+    constexpr int kMinBpm      = 40;
+    constexpr int kMinDensity  = 50;
+    constexpr int kMinVibe     = 50;
+
+    ColumnLayout cl;
+    // Hide the least-important columns first as space runs out: VIBE, then DENSITY.
+    cl.showVibe    = textW >= 560;
+    cl.showDensity = textW >= 420;
+
+    // Original design fractions (sum to 1.0 when all six columns are shown).
+    constexpr float fName = 0.33f, fMeter = 0.10f, fCategory = 0.19f,
+                     fVibe = 0.17f, fDensity = 0.13f, fBpm = 0.08f;
+
+    const float total = fName + fMeter + fCategory + fBpm
+                       + (cl.showVibe    ? fVibe    : 0.0f)
+                       + (cl.showDensity ? fDensity : 0.0f);
+
+    cl.nameW     = juce::roundToInt (textW * fName     / total);
+    cl.meterW    = juce::roundToInt (textW * fMeter    / total);
+    cl.categoryW = juce::roundToInt (textW * fCategory / total);
+    cl.bpmW      = juce::roundToInt (textW * fBpm      / total);
+    cl.densityW  = cl.showDensity ? juce::roundToInt (textW * fDensity / total) : 0;
+    cl.vibeW     = cl.showVibe    ? juce::roundToInt (textW * fVibe    / total) : 0;
+
+    // Enforce minimum widths on the higher-priority columns, taking the
+    // difference from NAME (which absorbs all remaining/extra space).
+    auto clampUp = [&] (int& w, int minW)
+    {
+        if (w < minW) { cl.nameW -= (minW - w); w = minW; }
+    };
+    clampUp (cl.meterW,    kMinMeter);
+    clampUp (cl.categoryW, kMinCategory);
+    clampUp (cl.bpmW,      kMinBpm);
+    if (cl.showDensity) clampUp (cl.densityW, kMinDensity);
+    if (cl.showVibe)    clampUp (cl.vibeW,    kMinVibe);
+
+    cl.nameW = juce::jmax (cl.nameW, kMinName);
+
+    // Give any rounding leftover/shortfall to NAME so columns exactly fill textW.
+    const int used = cl.nameW + cl.meterW + cl.categoryW + cl.bpmW + cl.densityW + cl.vibeW;
+    cl.nameW += (textW - used);
+
+    return cl;
+}
+
+//==============================================================================
+// MidiRollComponent
+//==============================================================================
+void MidiRollComponent::setPattern (const std::vector<std::vector<NoteEvent>>& notes,
+                                     int ppqValue, double totalTicksValue,
+                                     int beatsPerBarValue, int beatUnitValue)
+{
+    currentNotes    = notes;
+    ppq             = ppqValue;
+    totalTicks      = totalTicksValue;
+    beatsPerBar     = beatsPerBarValue;
+    beatUnit        = beatUnitValue;
+    midiDurationSec = 0.0; // will be set by setMidiDurationSec() after this call
+    playheadPos     = -1.0;
+    currentPage     = 0;
+    repaint();
+}
+
+void MidiRollComponent::paint (juce::Graphics& g)
+{
+    auto bounds = getLocalBounds();
+    const int   labelW = 56;
+    const int   rows   = DRUM_PARTS.size();
+    const float rowH   = (float)bounds.getHeight() / (float)rows;
+    const float gridW  = (float)(bounds.getWidth() - labelW);
+
+    // Background
+    g.setColour (Palette::bgDark);
+    g.fillRect (bounds);
+
+    // Label area
+    g.setColour (Palette::bgPanel);
+    g.fillRect (0, 0, labelW, bounds.getHeight());
+    g.setColour (Palette::borderSubtle);
+    g.drawLine ((float)labelW, 0.0f, (float)labelW, (float)bounds.getHeight(), 0.5f);
+
+    // Drum part labels and row dividers
+    for (int r = 0; r < rows; r++)
+    {
+        float y = (float)r * rowH;
+        g.setColour (Palette::borderSubtle);
+        g.drawLine (0.0f, y + rowH, (float)bounds.getWidth(), y + rowH, 0.5f);
+        g.setColour (Palette::textTertiary);
+        g.setFont (juce::Font (juce::FontOptions (9.f)));
+        g.drawText (DRUM_PARTS[r], 2, (int)y, labelW - 6, (int)rowH,
+                    juce::Justification::centredRight, false);
+    }
+
+    // Grid area alternating row shading
+    for (int r = 0; r < rows; r++)
+    {
+        if (r % 2 == 0)
+        {
+            g.setColour (juce::Colour (0x08000000));
+            g.fillRect ((float)labelW, (float)r * rowH, gridW, rowH);
+        }
+    }
+
+    if (totalTicks <= 0.0 || ppq <= 0) return;
+
+    // Tick-space geometry: 1 page = kBarsPerPage bars while playing.
+    // While stopped (no playhead), show the whole pattern on a single page.
+    const double ticksPerBeat = (double)ppq * (4.0 / (double)beatUnit);
+    const double ticksPerBar  = ticksPerBeat * (double)beatsPerBar;
+    const bool   isPlaying    = playheadPos >= 0.0;
+    const double ticksPerPage = isPlaying ? (ticksPerBar * (double)kBarsPerPage) : totalTicks;
+    const double totalBeats   = totalTicks / ticksPerBeat;
+    const int    numBeats     = juce::jmax (1, (int)std::ceil (totalBeats));
+
+    // Current page window in tick space
+    const double pageStartTick = (double)currentPage * ticksPerPage;
+    const double pageEndTick   = pageStartTick + ticksPerPage;
+
+    // Convert to 0.0-1.0 for note-position comparisons
+    const double pageStart = pageStartTick / totalTicks;
+    const double pageEnd   = pageEndTick   / totalTicks; // may exceed 1.0 for last page
+    // Scale: pattern-relative pos → page-relative pos (0.0 = left edge, 1.0 = right edge)
+    const double pageScale = totalTicks / ticksPerPage;
+
+    // Beat grid lines — only those within the current page tick window
+    for (int b = 0; b <= numBeats; b++)
+    {
+        const double beatTick = (double)b * ticksPerBeat;
+        if (beatTick < pageStartTick - 0.5 || beatTick > pageEndTick + 0.5) continue;
+        const float x     = (float)labelW
+                            + (float)((beatTick - pageStartTick) / ticksPerPage) * gridW;
+        const bool  isBar = (b % beatsPerBar == 0);
+        g.setColour (isBar ? juce::Colour (0x22000000) : juce::Colour (0x0E000000));
+        g.drawLine (x, 0.0f, x, (float)bounds.getHeight(), isBar ? 1.0f : 0.5f);
+    }
+
+    // Notes — only those within [pageStart, pageEnd)
+    const float noteW = 4.0f;
+    g.setColour (Palette::highlight);
+    for (int r = 0; r < rows && r < (int)currentNotes.size(); r++)
+    {
+        for (const auto& note : currentNotes[r])
+        {
+            if (note.position < pageStart || note.position >= pageEnd) continue;
+            float x  = (float)labelW
+                        + (float)((note.position - pageStart) * pageScale) * gridW
+                        - noteW * 0.5f;
+            float y  = (float)r * rowH + 2.0f;
+            float nH = rowH - 4.0f;
+            g.fillRoundedRectangle (x, y, noteW, nH, 1.5f);
+        }
+    }
+
+    // Playhead in page-relative coordinates
+    if (playheadPos >= 0.0 && playheadPos <= 1.0)
+    {
+        const double pageRel = juce::jlimit (0.0, 1.0,
+                                             (playheadPos - pageStart) * pageScale);
+        const float px = (float)labelW + (float)pageRel * gridW;
+        g.setColour (juce::Colour (0xCC000000));
+        g.drawLine (px, 0.0f, px, (float)bounds.getHeight(), 1.5f);
+    }
 }
 
 //==============================================================================
 // PatternRowComponent -- one reusable component per visible list row
 //==============================================================================
-class PatternRowComponent : public juce::Component
+class PatternRowComponent : public juce::Component,
+                            private juce::Timer
 {
 public:
     PatternRowComponent() = default;
 
-    void update (const PatternInfo* info, int row, bool selected)
+    void update (const PatternInfo* info, int row, bool selected,
+                 bool favourite = false, bool playing = false, bool loading = false)
     {
         patternInfo = info;
         rowIndex    = row;
         isSelected  = selected;
+        isFavourite = favourite;
+        isPlaying   = playing;
+        if (loading != isLoading)
+        {
+            isLoading = loading;
+            if (isLoading) startTimer (30);
+            else           stopTimer();
+        }
         repaint();
     }
 
@@ -51,53 +248,141 @@ public:
 
         if (patternInfo == nullptr) return;
 
-        // Drag handle: 2x3 dot grid on the left when hovered
-        if (isHovered)
+        auto bounds = getLocalBounds().toFloat().reduced (6.f, 0.f);
+
+        // Play / Stop button (22px fixed width)
         {
-            g.setColour ((isSelected ? juce::Colours::white : Palette::textMuted).withAlpha (0.75f));
-            const float dotSize = 2.0f;
-            const float hx = 4.0f;
-            const float hy = static_cast<float> (getHeight()) / 2.0f - 5.5f;
-            for (int col = 0; col < 2; ++col)
-                for (int row2 = 0; row2 < 3; ++row2)
-                    g.fillEllipse (hx + col * 4.5f, hy + row2 * 5.0f, dotSize, dotSize);
+            auto playRect = bounds.removeFromLeft (22.f);
+            const float cx = playRect.getCentreX();
+            const float cy = playRect.getCentreY();
+            const float r  = 10.5f;
+
+            if (isLoading)
+            {
+                // Spinner: thin grey ring + rotating green arc (quarter circle)
+                g.setColour (juce::Colour (0x20000000));
+                g.drawEllipse (cx - r, cy - r, r * 2.0f, r * 2.0f, 1.0f);
+
+                const float arcR = r - 2.5f;
+                juce::Path arc;
+                arc.addArc (cx - arcR, cy - arcR, arcR * 2.0f, arcR * 2.0f,
+                             spinnerAngle,
+                             spinnerAngle + juce::MathConstants<float>::halfPi, true);
+                juce::PathStrokeType stroke (2.0f, juce::PathStrokeType::curved,
+                                             juce::PathStrokeType::rounded);
+                g.setColour (juce::Colour (0xFF639922));
+                g.strokePath (arc, stroke);
+            }
+            else if (isPlaying)
+            {
+                g.setColour (juce::Colour (0xFF639922));
+                g.fillEllipse (cx - r, cy - r, r * 2.0f, r * 2.0f);
+                g.setColour (juce::Colours::white);
+                const float sq = 7.0f;
+                g.fillRect (cx - sq * 0.5f, cy - sq * 0.5f, sq, sq);
+            }
+            else
+            {
+                // Pressed: dark fill inside circle
+                if (isButtonPress)
+                {
+                    g.setColour (juce::Colour (0x25000000));
+                    g.fillEllipse (cx - r, cy - r, r * 2.0f, r * 2.0f);
+                }
+                // Border: green on hover, normal otherwise
+                g.setColour (isButtonHover ? juce::Colour (0xFF639922)
+                                           : juce::Colour (0x4D000000));
+                g.drawEllipse (cx - r, cy - r, r * 2.0f, r * 2.0f, 1.0f);
+                // Triangle icon
+                g.setColour (juce::Colour (0xFF666666));
+                juce::Path tri;
+                tri.addTriangle (cx - 3.5f, cy - 5.0f,
+                                 cx - 3.5f, cy + 5.0f,
+                                 cx + 5.5f, cy);
+                g.fillPath (tri);
+            }
         }
 
-        auto bounds = getLocalBounds().toFloat().reduced (6.f, 0.f);
-        const float w = static_cast<float> (getWidth());
+        // Star column (20px fixed width)
+        {
+            g.setFont (juce::Font (juce::FontOptions (14.f)));
+            g.setColour (isFavourite ? juce::Colour (0xFFBA7517) : juce::Colour (0xFFCCCCCC));
+            const juce::String star = isFavourite
+                ? juce::String (juce::CharPointer_UTF8 ("\xe2\x98\x85"))
+                : juce::String (juce::CharPointer_UTF8 ("\xe2\x98\x86"));
+            g.drawText (star, bounds.removeFromLeft (20.f).toNearestInt(),
+                        juce::Justification::centred, false);
+        }
 
-        struct Col { juce::String text; float frac; bool primary; };
+        const int textW = (int) bounds.getWidth();
+        const ColumnLayout cl = computeColumnLayout (textW);
+
+        struct Col { juce::String text; int width; bool primary; bool isCat; };
         Col cols[] = {
-            { patternInfo->display_name,                        0.33f, true  },
-            { patternInfo->meter,                               0.10f, false },
-            { patternInfo->category,                            0.19f, false },
-            { patternInfo->vibe.joinIntoString (", "),          0.17f, false },
-            { patternInfo->density,                             0.13f, false },
-            { juce::String (patternInfo->bpm) + " BPM",        0.08f, false },
+            { patternInfo->display_name,                cl.nameW,     true,  false },
+            { patternInfo->meter,                       cl.meterW,    false, false },
+            { patternInfo->category,                    cl.categoryW, false, true  },
+            { patternInfo->vibe.joinIntoString (", "),   cl.vibeW,     false, false },
+            { patternInfo->density,                      cl.densityW,  false, false },
+            { juce::String (patternInfo->bpm) + " BPM",  cl.bpmW,      false, false },
         };
 
         g.setFont (juce::Font (juce::FontOptions (13.f)));
 
         for (auto& c : cols)
         {
-            const int colW = static_cast<int> (w * c.frac);
-            g.setColour (isSelected ? juce::Colours::white
-                                    : (c.primary ? Palette::textPrimary : Palette::textMuted));
-            g.drawText (c.text,
-                        bounds.removeFromLeft (static_cast<float> (colW)).toNearestInt(),
-                        juce::Justification::centredLeft, true);
+            if (c.width <= 0) continue; // column hidden at this width
+
+            auto cellBounds = bounds.removeFromLeft (static_cast<float> (c.width)).toNearestInt();
+
+            if (c.isCat && c.text.isNotEmpty())
+            {
+                // Category badge
+                juce::Colour bg, fg;
+                if      (c.text == "Groove") { bg = juce::Colour (0xFFEAF3DE); fg = juce::Colour (0xFF3B6D11); }
+                else if (c.text == "Fill")   { bg = juce::Colour (0xFFFAEEDA); fg = juce::Colour (0xFF854F0B); }
+                else if (c.text == "Build")  { bg = juce::Colour (0xFFE6F1FB); fg = juce::Colour (0xFF185FA5); }
+                else                         { bg = Palette::bgPanel;          fg = Palette::textMuted;         }
+                auto pill = cellBounds.reduced (2).withSizeKeepingCentre (
+                    juce::jmin (cellBounds.getWidth(), 60), 18);
+                g.setColour (bg);
+                g.fillRoundedRectangle (pill.toFloat(), 9.0f);
+                g.setColour (fg);
+                g.setFont (juce::Font (juce::FontOptions (10.f)).boldened());
+                g.drawText (c.text, pill, juce::Justification::centred, false);
+                g.setFont (juce::Font (juce::FontOptions (13.f))); // restore
+            }
+            else
+            {
+                g.setColour (c.primary ? Palette::textPrimary : Palette::textMuted);
+                // Leave a small gap so truncated text never touches the next column.
+                g.drawText (c.text, cellBounds.withTrimmedRight (4), juce::Justification::centredLeft, true);
+            }
         }
     }
 
-    void mouseEnter (const juce::MouseEvent&) override
+    void mouseEnter (const juce::MouseEvent& e) override
     {
-        isHovered = true;
+        isHovered     = true;
+        isButtonHover = (e.x >= 6 && e.x < 28);
         repaint();
+    }
+
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        bool overBtn = (e.x >= 6 && e.x < 28);
+        if (overBtn != isButtonHover)
+        {
+            isButtonHover = overBtn;
+            repaint();
+        }
     }
 
     void mouseExit (const juce::MouseEvent&) override
     {
-        isHovered = false;
+        isHovered     = false;
+        isButtonHover = false;
+        isButtonPress = false;
         repaint();
     }
 
@@ -107,12 +392,35 @@ public:
                          : juce::MouseCursor (juce::MouseCursor::NormalCursor);
     }
 
-    // mouseDown selects the row in the ListBox, because the row component consumes
-    // mouse events and the ListBox would not see them otherwise.
-    void mouseDown (const juce::MouseEvent&) override
+    void mouseDown (const juce::MouseEvent& e) override
     {
+        // Play button area: x∈[6, 28) — show press state; fire on mouseUp
+        if (e.x >= 6 && e.x < 28 && patternInfo != nullptr)
+        {
+            isButtonPress = true;
+            repaint();
+            return;
+        }
+        // Star area: x∈[28, 48)
+        if (e.x >= 28 && e.x < 48 && patternInfo != nullptr)
+        {
+            if (onStarClicked) onStarClicked();
+            return;
+        }
         if (auto* lb = findParentComponentOfClass<juce::ListBox>())
             lb->selectRow (rowIndex);
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (isButtonPress)
+        {
+            isButtonPress = false;
+            repaint();
+            // Fire only if mouse released within the button area
+            if (e.x >= 6 && e.x < 28 && patternInfo != nullptr)
+                if (onPlayClicked) onPlayClicked();
+        }
     }
 
     // mouseDrag triggers an OS-level external DnD.
@@ -133,12 +441,33 @@ public:
     // Callback provided by the editor; returns original or converted MIDI file.
     std::function<juce::File()> getDragFile;
 
+    // Called when the play/stop button is clicked.
+    std::function<void()> onPlayClicked;
+
+    // Called when the star icon is clicked.
+    std::function<void()> onStarClicked;
+
 private:
-    const PatternInfo* patternInfo = nullptr;
+    void timerCallback() override
+    {
+        // Advance spinner angle: ~1 full rotation per second at 30ms interval
+        spinnerAngle += juce::MathConstants<float>::twoPi * 0.030f;
+        if (spinnerAngle >= juce::MathConstants<float>::twoPi)
+            spinnerAngle -= juce::MathConstants<float>::twoPi;
+        repaint();
+    }
+
+    const PatternInfo* patternInfo  = nullptr;
     juce::File         midiFile;
-    int                rowIndex   = 0;
-    bool               isSelected = false;
-    bool               isHovered  = false;
+    int                rowIndex      = 0;
+    bool               isSelected    = false;
+    bool               isHovered     = false;
+    bool               isFavourite   = false;
+    bool               isPlaying     = false;
+    bool               isLoading     = false;
+    float              spinnerAngle  = 0.0f;
+    bool               isButtonHover = false;
+    bool               isButtonPress = false;
 };
 
 //==============================================================================
@@ -345,9 +674,8 @@ private:
 
     void paintRowBackground (juce::Graphics& g, int row, int, int, bool selected) override
     {
-        g.fillAll (selected ? juce::Colour (0xff3D5A8A)
-                            : (row % 2 == 0 ? juce::Colour (0xffFFFFFF)
-                                            : juce::Colour (0xffF0F0F0)));
+        g.fillAll (selected ? Palette::rowSelected
+                            : (row % 2 == 0 ? Palette::rowEven : Palette::rowOdd));
     }
 
     void paintCell (juce::Graphics& g, int row, int col, int w, int h, bool) override
@@ -517,21 +845,29 @@ TakefujiGrooveVaultAudioProcessorEditor::TakefujiGrooveVaultAudioProcessorEditor
     TakefujiGrooveVaultAudioProcessor& p)
     : AudioProcessorEditor (&p), audioProcessor (p)
 {
+    // Load persisted favourites
+    favouriteIds = loadFavourites();
+
     setSize (860, 558); // extra height for keymap bar
+
+    //--- Filter panel scroll container ------------------------------------------
+    addAndMakeVisible (filterViewport);
+    filterViewport.setViewedComponent (&filterPanelContent, false);
+    filterViewport.setScrollBarsShown (true, false);
 
     //--- Filter title ----------------------------------------------------------
     filterTitle.setText ("FILTERS", juce::dontSendNotification);
     filterTitle.setFont (juce::Font (juce::FontOptions (11.f)).boldened());
-    filterTitle.setColour (juce::Label::textColourId, Palette::textMuted);
-    addAndMakeVisible (filterTitle);
+    filterTitle.setColour (juce::Label::textColourId, Palette::textTertiary);
+    filterPanelContent.addAndMakeVisible (filterTitle);
 
     //--- Filter labels ---------------------------------------------------------
     auto setupLabel = [&](juce::Label& lbl, const char* text)
     {
         lbl.setText (text, juce::dontSendNotification);
         lbl.setFont (juce::Font (juce::FontOptions (10.f)).boldened());
-        lbl.setColour (juce::Label::textColourId, Palette::textMuted);
-        addAndMakeVisible (lbl);
+        lbl.setColour (juce::Label::textColourId, Palette::textTertiary);
+        filterPanelContent.addAndMakeVisible (lbl);
     };
 
     setupLabel (sourceLabel,   "TRACK NAME");
@@ -543,14 +879,30 @@ TakefujiGrooveVaultAudioProcessorEditor::TakefujiGrooveVaultAudioProcessorEditor
     setupLabel (bpmMinLabel,   "Min");
     setupLabel (bpmMaxLabel,   "Max");
 
+    //--- Favorites Only toggle -------------------------------------------------
+    // U+2605 ★ encoded as UTF-8 escape to avoid CP932 source-file warning
+    favoritesOnlyToggle.setButtonText (
+        juce::String (juce::CharPointer_UTF8 ("\xe2\x98\x85")) + "  Favorites only");
+    favoritesOnlyToggle.setClickingTogglesState (true);
+    favoritesOnlyToggle.setColour (juce::TextButton::buttonColourId,   Palette::bgPanel);
+    favoritesOnlyToggle.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xFFEAF3DE));
+    favoritesOnlyToggle.setColour (juce::TextButton::textColourOffId,  Palette::textMuted);
+    favoritesOnlyToggle.setColour (juce::TextButton::textColourOnId,   juce::Colour (0xFF3B6D11));
+    favoritesOnlyToggle.onClick = [this]()
+    {
+        favoritesOnly = favoritesOnlyToggle.getToggleState();
+        applyFilters();
+    };
+    filterPanelContent.addAndMakeVisible (favoritesOnlyToggle);
+
     //--- Filter combo boxes ----------------------------------------------------
     auto setupCombo = [&](juce::ComboBox& cb)
     {
         cb.setColour (juce::ComboBox::backgroundColourId, Palette::bgDark);
         cb.setColour (juce::ComboBox::textColourId,       Palette::textPrimary);
-        cb.setColour (juce::ComboBox::outlineColourId,    Palette::accent);
+        cb.setColour (juce::ComboBox::outlineColourId,    Palette::borderSubtle);
         cb.addListener (this);
-        addAndMakeVisible (cb);
+        filterPanelContent.addAndMakeVisible (cb);
     };
 
     setupCombo (sourceFilter);
@@ -569,18 +921,33 @@ TakefujiGrooveVaultAudioProcessorEditor::TakefujiGrooveVaultAudioProcessorEditor
         ed.setColour (juce::TextEditor::outlineColourId,    juce::Colour (0xffBBBBBB));
         ed.setFont (juce::Font (juce::FontOptions (13.f)));
         ed.onTextChange = [this] { applyFilters(); };
-        addAndMakeVisible (ed);
+        filterPanelContent.addAndMakeVisible (ed);
     };
 
     setupBpmEditor (bpmMinEditor, "0");
     setupBpmEditor (bpmMaxEditor, "999");
 
+    //--- Search bar -----------------------------------------------------------
+    searchEditor.setTextToShowWhenEmpty ("Search patterns...", Palette::textTertiary);
+    searchEditor.setFont (juce::Font (juce::FontOptions (12.f)));
+    searchEditor.setColour (juce::TextEditor::backgroundColourId, Palette::bgDark);
+    searchEditor.setColour (juce::TextEditor::textColourId,       Palette::textPrimary);
+    searchEditor.setColour (juce::TextEditor::outlineColourId,    Palette::borderSubtle);
+    searchEditor.setColour (juce::TextEditor::focusedOutlineColourId, Palette::borderNormal);
+    searchEditor.onTextChange = [this] { applyFilters(); };
+    addAndMakeVisible (searchEditor);
+
+    countLabel.setFont (juce::Font (juce::FontOptions (11.f)));
+    countLabel.setColour (juce::Label::textColourId, Palette::textTertiary);
+    countLabel.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (countLabel);
+
     //--- Pattern list ----------------------------------------------------------
     patternList.setModel (this);
     patternList.setRowHeight (kRowHeight);
     patternList.setColour (juce::ListBox::backgroundColourId, Palette::bgDark);
-    patternList.setColour (juce::ListBox::outlineColourId,    Palette::accent);
-    patternList.setOutlineThickness (1);
+    patternList.setColour (juce::ListBox::outlineColourId,    Palette::borderSubtle);
+    patternList.setOutlineThickness (0);
     addAndMakeVisible (patternList);
 
     //--- Preview bar -----------------------------------------------------------
@@ -590,42 +957,57 @@ TakefujiGrooveVaultAudioProcessorEditor::TakefujiGrooveVaultAudioProcessorEditor
     previewLabel.setColour (juce::Label::textColourId, Palette::textMuted);
     addAndMakeVisible (previewLabel);
 
-    playButton.setColour (juce::TextButton::buttonColourId,   juce::Colour (0xff333333));
-    playButton.setColour (juce::TextButton::buttonOnColourId, Palette::highlight);
-    playButton.setColour (juce::TextButton::textColourOffId,  juce::Colours::white);
-    playButton.setColour (juce::TextButton::textColourOnId,   juce::Colours::white);
-    // PLAY button starts disabled; selectedRowsChanged() enables it when a
-    // pattern with a preview file is selected.
-    playButton.setEnabled (false);
-    playButton.onClick = [this]()
+    //--- Volume slider -----------------------------------------------------------
+    volumeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    volumeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    volumeSlider.setRange (0.0, 1.0, 0.01);
+    volumeSlider.setValue (0.8, juce::dontSendNotification);
+    volumeSlider.setColour (juce::Slider::trackColourId,     Palette::borderNormal);
+    volumeSlider.setColour (juce::Slider::thumbColourId,     Palette::textPrimary);
+    volumeSlider.setColour (juce::Slider::backgroundColourId, Palette::bgPanel);
+    volumeSlider.onValueChange = [this]()
     {
-        juce::Logger::writeToLog ("[GrooveVault] PLAY button clicked");
-        togglePreview();
+        float vol = (float) volumeSlider.getValue();
+        audioProcessor.setPreviewVolume (vol);
+        volumeLabel.setText (juce::String (juce::roundToInt (vol * 100.0f)) + "%",
+                             juce::dontSendNotification);
     };
-    addAndMakeVisible (playButton);
+    addAndMakeVisible (volumeSlider);
+
+    volumeLabel.setText ("80%", juce::dontSendNotification);
+    volumeLabel.setFont (juce::Font (juce::FontOptions (10.f)));
+    volumeLabel.setColour (juce::Label::textColourId, Palette::textTertiary);
+    addAndMakeVisible (volumeLabel);
 
     //--- Keymap bar (SOURCE fixed to BFD3; only TARGET is selectable) ----------
     targetMapLabel.setFont (juce::Font (juce::FontOptions (10.f)).boldened());
-    targetMapLabel.setColour (juce::Label::textColourId, Palette::textMuted);
+    targetMapLabel.setColour (juce::Label::textColourId, Palette::textTertiary);
     targetMapLabel.setJustificationType (juce::Justification::centredRight);
     addAndMakeVisible (targetMapLabel);
 
-    targetMapCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colours::white);
+    targetMapCombo.setColour (juce::ComboBox::backgroundColourId, Palette::bgDark);
     targetMapCombo.setColour (juce::ComboBox::textColourId,       Palette::textPrimary);
-    targetMapCombo.setColour (juce::ComboBox::outlineColourId,    juce::Colour (0xffBBBBBB));
+    targetMapCombo.setColour (juce::ComboBox::outlineColourId,    Palette::borderSubtle);
     targetMapCombo.addListener (this);
     addAndMakeVisible (targetMapCombo);
 
-    editMapButton.setColour (juce::TextButton::buttonColourId,  juce::Colours::white);
+    editMapButton.setColour (juce::TextButton::buttonColourId,  Palette::bgDark);
     editMapButton.setColour (juce::TextButton::textColourOffId, Palette::textPrimary);
     editMapButton.onClick = [this] { openKeyMapEditor(); };
     addAndMakeVisible (editMapButton);
+
+    //--- MIDI Roll -----------------------------------------------------------
+    midiRollTitle.setText ("MIDI PREVIEW", juce::dontSendNotification);
+    midiRollTitle.setFont (juce::Font (juce::FontOptions (10.f)).boldened());
+    midiRollTitle.setColour (juce::Label::textColourId, Palette::textTertiary);
+    addAndMakeVisible (midiRollTitle);
+    addAndMakeVisible (midiRollComponent);
 
     populateFilterOptions();
     populateKeyMapCombos();
     applyFilters();
 
-    startTimerHz (10); // poll isPreviewPlaying() at 10 Hz to update button label
+    startTimer (30); // 30ms ≈ 33fps — drives progress bar, playhead, and spinner detection
 
     // Register download-complete callback (runs on message thread)
     {
@@ -634,8 +1016,12 @@ TakefujiGrooveVaultAudioProcessorEditor::TakefujiGrooveVaultAudioProcessorEditor
         {
             if (safe == nullptr) return;
             auto* ed = safe.getComponent();
-            ed->playButton.setEnabled (true);
-            ed->playButton.setButtonText (ed->audioProcessor.isPreviewPlaying() ? "STOP" : "PLAY");
+            // Clear loading state (success or failure)
+            if (ed->loadingRowIndex >= 0)
+            {
+                ed->loadingRowIndex = -1;
+                ed->patternList.updateContent();
+            }
             if (offline)
                 juce::AlertWindow::showMessageBoxAsync (
                     juce::MessageBoxIconType::WarningIcon,
@@ -669,32 +1055,42 @@ void TakefujiGrooveVaultAudioProcessorEditor::paint (juce::Graphics& g)
     g.setColour (Palette::bgPanel);
     g.fillRect (0, 0, kFilterWidth, getHeight() - kPreviewHeight);
 
-    // Column header strip
-    const int listX = kFilterWidth;
-    const int listW = getWidth() - kFilterWidth;
+    // Column header strip (below search bar)
+    const int listX  = kFilterWidth;
+    const int listW  = getWidth() - kFilterWidth;
+    const int headerY = kSearchHeight;
     g.setColour (Palette::accent);
-    g.fillRect (listX, 0, listW, kHeaderHeight);
+    g.fillRect (listX, headerY, listW, kHeaderHeight);
 
     // Column header labels
-    g.setColour (Palette::textMuted);
+    g.setColour (Palette::textTertiary);
     g.setFont (juce::Font (juce::FontOptions (10.f)).boldened());
 
-    struct HCol { const char* name; float frac; };
-    constexpr HCol headers[] = {
-        { "NAME",     0.33f },
-        { "METER",    0.10f },
-        { "CATEGORY", 0.19f },
-        { "VIBE",     0.17f },
-        { "DENSITY",  0.13f },
-        { "BPM",      0.08f },
+    int hx = listX + 6;
+    // Play button column header (22px — left blank, icon only as visual hint)
+    hx += 22;
+    // Star column header (20px)
+    g.drawText (juce::String (juce::CharPointer_UTF8 ("\xe2\x98\x85")),
+                hx, headerY, 20, kHeaderHeight, juce::Justification::centred, false);
+    hx += 20;
+    const int textListW = listW - 54; // 12px insets + 22px play + 20px star
+    const ColumnLayout cl = computeColumnLayout (textListW);
+
+    struct HCol { const char* name; int width; };
+    HCol headers[] = {
+        { "NAME",     cl.nameW },
+        { "METER",    cl.meterW },
+        { "CATEGORY", cl.categoryW },
+        { "VIBE",     cl.vibeW },
+        { "DENSITY",  cl.densityW },
+        { "BPM",      cl.bpmW },
     };
 
-    int hx = listX + 6;
     for (auto& h : headers)
     {
-        const int cw = static_cast<int> (listW * h.frac);
-        g.drawText (h.name, hx, 0, cw, kHeaderHeight, juce::Justification::centredLeft, true);
-        hx += cw;
+        if (h.width > 0)
+            g.drawText (h.name, hx, headerY, h.width, kHeaderHeight, juce::Justification::centredLeft, true);
+        hx += h.width;
     }
 
     // Keymap bar background (above preview bar, right area only)
@@ -721,24 +1117,38 @@ void TakefujiGrooveVaultAudioProcessorEditor::paint (juce::Graphics& g)
         }
     }
 
-    // Separator lines
-    g.setColour (Palette::accent);
-    g.fillRect (kFilterWidth - 1, 0, 1, getHeight());
-    g.fillRect (0, getHeight() - kPreviewHeight, getWidth(), 1);
-    g.fillRect (kFilterWidth, getHeight() - kPreviewHeight - kKeyMapHeight,
-                getWidth() - kFilterWidth, 1);
+    // Separator lines (0.5px thin)
+    g.setColour (Palette::borderSubtle);
+    g.drawLine ((float)kFilterWidth, 0.0f, (float)kFilterWidth, (float)getHeight(), 0.5f);
+    g.drawLine (0.0f, (float)(getHeight() - kPreviewHeight),
+                (float)getWidth(), (float)(getHeight() - kPreviewHeight), 0.5f);
+    g.drawLine (0.0f, (float)(getHeight() - kPreviewHeight - kMidiTitleH - kMidiRollHeight),
+                (float)getWidth(), (float)(getHeight() - kPreviewHeight - kMidiTitleH - kMidiRollHeight), 0.5f);
+    g.drawLine ((float)kFilterWidth, (float)(getHeight() - kPreviewHeight - kMidiTitleH - kMidiRollHeight - kKeyMapHeight),
+                (float)getWidth(), (float)(getHeight() - kPreviewHeight - kMidiTitleH - kMidiRollHeight - kKeyMapHeight), 0.5f);
 }
 
 void TakefujiGrooveVaultAudioProcessorEditor::resized()
 {
     auto area = getLocalBounds();
 
+    // --- MIDI Roll (above preview bar, full width) ---
+    {
+        auto midiArea = area.removeFromBottom (kMidiTitleH + kMidiRollHeight);
+        midiRollTitle.setBounds (midiArea.removeFromTop (kMidiTitleH).withTrimmedLeft (8));
+        midiRollComponent.setBounds (midiArea);
+    }
+
     // --- Preview bar (bottom, full width) ---
     auto previewArea = area.removeFromBottom (kPreviewHeight).reduced (12, 14);
-    playButton.setBounds (previewArea.removeFromRight (80));
-    previewArea.removeFromRight (10);
+    // Right side: volume label + slider
+    volumeLabel.setBounds  (previewArea.removeFromRight (32));
+    volumeSlider.setBounds (previewArea.removeFromRight (68));
+    previewArea.removeFromRight (8);
+    // Progress bar
     progressBarBounds = previewArea.removeFromRight (180);
-    previewArea.removeFromRight (10);
+    previewArea.removeFromRight (8);
+    // Preview label (leftmost, flexible width)
     previewLabel.setBounds (previewArea);
 
     // --- Keymap bar: TARGET + EDIT MAP only (SOURCE is always BFD3) ---
@@ -753,11 +1163,21 @@ void TakefujiGrooveVaultAudioProcessorEditor::resized()
     }
     area.removeFromBottom (kKeyMapHeight);
 
-    // --- Filter panel (left) ---
-    auto filterArea = area.removeFromLeft (kFilterWidth).reduced (10, 10);
+    // --- Filter panel (left, scrollable if window is too short) ---
+    auto filterOuter = area.removeFromLeft (kFilterWidth);
+    filterViewport.setBounds (filterOuter);
+
+    // -8 reserves space for the vertical scrollbar so no horizontal scrollbar appears.
+    constexpr int contentW = kFilterWidth - 8;
+    constexpr int contentH = 10 + 18 + 6 + 28 + 8 + 5 * (15 + 24 + 8) + 15 + 24 + 10;
+    filterPanelContent.setSize (contentW, contentH);
+
+    auto filterArea = filterPanelContent.getLocalBounds().reduced (10, 10);
 
     filterTitle.setBounds (filterArea.removeFromTop (18));
     filterArea.removeFromTop (6);
+    favoritesOnlyToggle.setBounds (filterArea.removeFromTop (28));
+    filterArea.removeFromTop (8);
 
     auto placeFilter = [&](juce::Label& lbl, juce::ComboBox& cb)
     {
@@ -779,6 +1199,14 @@ void TakefujiGrooveVaultAudioProcessorEditor::resized()
     bpmRow.removeFromLeft (6);
     bpmMaxLabel.setBounds (bpmRow.removeFromLeft (28));
     bpmMaxEditor.setBounds (bpmRow);
+
+    // --- Search bar + count label (full-width, above header) ---
+    {
+        auto searchRow = area.removeFromTop (kSearchHeight).reduced (4, 4);
+        auto countArea = searchRow.removeFromRight (100);
+        countLabel.setBounds (countArea);
+        searchEditor.setBounds (searchRow);
+    }
 
     // --- Pattern list (remaining right area, below header) ---
     area.removeFromTop (kHeaderHeight);
@@ -804,45 +1232,51 @@ void TakefujiGrooveVaultAudioProcessorEditor::paintListBoxItem (
 
 void TakefujiGrooveVaultAudioProcessorEditor::selectedRowsChanged (int lastRow)
 {
-    // Stop preview whenever the selection changes
+    // Stop any running preview when selection changes
     audioProcessor.stopPreview();
-    playbackProgress = 0.0;
-    lastPlayingState = false;
-    playButton.setToggleState (false, juce::dontSendNotification);
-    playButton.setButtonText  ("PLAY");
+    playbackProgress  = 0.0;
+    lastPlayingState  = false;
+    loadingRowIndex   = -1;
+    midiRollComponent.setPlayheadSec (-1.0); // hide playhead on row switch
     previewLabel.setColour (juce::Label::textColourId, Palette::textMuted);
 
     if (lastRow >= 0 && lastRow < filteredPatterns.size())
     {
         const auto& p = *filteredPatterns[lastRow];
 
-        // Diagnose: log preview field and button enable decision
+        // Load MIDI roll
+        {
+            auto resDir  = audioProcessor.getResourcesDirectory();
+            auto midiSub = resDir.getChildFile ("midi");
+            auto midiF   = midiSub.isDirectory()
+                           ? midiSub.getChildFile (p.filename)
+                           : resDir.getChildFile (p.filename);
+            loadMidiRollData (midiF);
+        }
+
         juce::Logger::writeToLog ("[GrooveVault] selectedRowsChanged: row=" + juce::String (lastRow)
                                   + "  display_name=" + p.display_name
-                                  + "  preview='" + p.preview + "'"
-                                  + "  buttonEnabled=" + (p.preview.isNotEmpty() ? "YES" : "NO (preview empty)"));
+                                  + "  preview='" + p.preview + "'");
 
         if (p.preview.isEmpty())
         {
             previewLabel.setText ("Drag to DAW  |  No preview available",
                                   juce::dontSendNotification);
-            playButton.setEnabled (false);
         }
         else
         {
-            previewLabel.setText ("Drag to DAW  |  Press PLAY to preview",
+            previewLabel.setText ("Drag to DAW  |  Press "
+                                  + juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xb6"))
+                                  + " to preview",
                                   juce::dontSendNotification);
-            playButton.setEnabled (true);
         }
     }
     else
     {
         juce::Logger::writeToLog ("[GrooveVault] selectedRowsChanged: no row selected");
-        // U+2190 (left arrow) encoded as UTF-8 escape sequences to avoid C4819
         previewLabel.setText (juce::String (juce::CharPointer_UTF8 ("\xe2\x86\x90"))
                               + " Select a pattern to preview or drag to DAW",
                               juce::dontSendNotification);
-        playButton.setEnabled (false);
     }
 }
 
@@ -856,7 +1290,11 @@ juce::Component* TakefujiGrooveVaultAudioProcessorEditor::refreshComponentForRow
     if (row < filteredPatterns.size())
     {
         const auto* p = filteredPatterns[row];
-        rowComp->update (p, row, isRowSelected);
+        bool isFav        = favouriteIds.count (p->filename) > 0;
+        bool isRowPlaying = audioProcessor.isPreviewPlaying()
+                            && (row == patternList.getSelectedRow());
+        bool isRowLoading = (row == loadingRowIndex);
+        rowComp->update (p, row, isRowSelected, isFav, isRowPlaying, isRowLoading);
 
         // Resolve original MIDI file path
         auto resDir  = audioProcessor.getResourcesDirectory();
@@ -866,15 +1304,29 @@ juce::Component* TakefujiGrooveVaultAudioProcessorEditor::refreshComponentForRow
                              : resDir.getChildFile (p->filename));
         rowComp->setMidiFile (originalMidi);
 
-        // Provide a DnD callback that applies keymap conversion on demand
+        // DnD callback
         rowComp->getDragFile = [this, originalMidi]() {
             return this->getFileToDrag (originalMidi);
+        };
+
+        // Star toggle callback
+        juce::String filename = p->filename;
+        rowComp->onStarClicked = [this, filename]() { toggleFavourite (filename); };
+
+        // Play/stop button callback
+        rowComp->onPlayClicked = [this, row]()
+        {
+            if (patternList.getSelectedRow() != row)
+                patternList.selectRow (row); // select first (stops current preview)
+            togglePreview(); // always toggle play/stop for this row
         };
     }
     else
     {
-        rowComp->update (nullptr, row, isRowSelected);
-        rowComp->getDragFile = nullptr;
+        rowComp->update (nullptr, row, isRowSelected, false, false);
+        rowComp->getDragFile   = nullptr;
+        rowComp->onStarClicked = nullptr;
+        rowComp->onPlayClicked = nullptr;
     }
 
     return rowComp;
@@ -920,43 +1372,48 @@ void TakefujiGrooveVaultAudioProcessorEditor::togglePreview()
         return;
     }
 
-    // Show loading state; callback or cache-hit path will restore it
-    playButton.setEnabled (false);
-    playButton.setButtonText ("LOADING...");
-
     juce::Logger::writeToLog ("[GrooveVault] togglePreview: startPreviewFromUrl -> " + p->preview);
     audioProcessor.startPreviewFromUrl (p->preview);
 
-    if (!audioProcessor.isPreviewLoading())
+    if (audioProcessor.isPreviewLoading())
     {
-        // Cache hit: startPreview() was called synchronously, no callback will fire
-        playButton.setEnabled (true);
-        // timerCallback will update the button text at the next 100 ms tick
+        loadingRowIndex = row;
+        patternList.updateContent(); // show spinner on the loading row
     }
 }
 
 void TakefujiGrooveVaultAudioProcessorEditor::timerCallback()
 {
-    // Don't touch button state while download is in progress
+    // Detect when loading finishes (download complete or cache hit)
+    if (loadingRowIndex >= 0 && !audioProcessor.isPreviewLoading())
+    {
+        loadingRowIndex = -1;
+        patternList.updateContent(); // clear spinner
+    }
+
     if (audioProcessor.isPreviewLoading())
-        return;
+        return; // still downloading — skip playback state update
 
     const bool playing     = audioProcessor.isPreviewPlaying();
     const bool stateChange = (playing != lastPlayingState);
     lastPlayingState = playing;
 
-    // --- Progress bar ---
+    // --- Progress bar + playhead ---
     if (playing)
-        playbackProgress = audioProcessor.getPlaybackPosition();
-    else if (stateChange)
-        playbackProgress = 0.0; // just stopped -- clear bar
-
-    // --- Button text / toggle state ---
-    if (stateChange)
     {
-        playButton.setToggleState (playing, juce::dontSendNotification);
-        playButton.setButtonText  (playing ? "STOP" : "PLAY");
+        playbackProgress = audioProcessor.getPlaybackPosition();
+        // Use raw audio seconds so MIDI roll can align to MIDI tempo
+        midiRollComponent.setPlayheadSec (audioProcessor.getPlaybackCurrentSec());
     }
+    else if (stateChange)
+    {
+        playbackProgress = 0.0;
+        midiRollComponent.setPlayheadSec (-1.0); // hide on stop
+    }
+
+    // --- Refresh row play icons on state change ---
+    if (stateChange)
+        patternList.updateContent();
 
     // --- Preview label ---
     const int row = patternList.getSelectedRow();
@@ -977,7 +1434,7 @@ void TakefujiGrooveVaultAudioProcessorEditor::timerCallback()
             const auto& p = *filteredPatterns[row];
             previewLabel.setText (p.preview.isEmpty()
                                   ? "Drag to DAW  |  No preview available"
-                                  : "Drag to DAW  |  Press PLAY to preview",
+                                  : "Drag to DAW",
                                   juce::dontSendNotification);
         }
         else
@@ -1064,6 +1521,153 @@ void TakefujiGrooveVaultAudioProcessorEditor::openKeyMapEditor()
 //==============================================================================
 // Filtering
 //==============================================================================
+void TakefujiGrooveVaultAudioProcessorEditor::loadMidiRollData (const juce::File& midiFile)
+{
+    auto reset = [this] {
+        midiRollComponent.setPattern ({}, 480, 0.0, 4, 4);
+        midiRollComponent.setMidiDurationSec (0.0);
+    };
+
+    if (!midiFile.existsAsFile()) { reset(); return; }
+
+    // BFD3 note → DRUM_PARTS index, derived from Resources/keymaps/bfd3.json's
+    // note_to_part table. Every entry in that table is grouped here by its
+    // "part" field so no note is silently dropped from the roll.
+    // DRUM_PARTS: 0=Kick 1=Snare 2=Hi-Hat 3=Tom1 4=Tom2 5=FloorTom 6=Ride 7=CrashL 8=CrashR 9=China
+    static const std::map<int,int> noteMap {
+        // 0: Kick — kick (hit, alt) + kick2 (hit, bow, edge)
+        { 24, 0 }, { 84, 0 }, { 36, 0 }, { 68, 0 }, { 92, 0 },
+        // 1: Snare — snare (rimshot, hit, sidestick, flam, edge, bow, pedal)
+        //           + snare2 (hit, bow, edge)
+        { 25, 1 }, { 26, 1 }, { 27, 1 }, { 28, 1 }, { 29, 1 }, { 86, 1 }, { 88, 1 },
+        { 40, 1 }, { 73, 1 }, { 94, 1 },
+        // 2: Hi-Hat — hihat, all articulations
+        { 18, 2 }, { 20, 2 }, { 22, 2 }, { 30, 2 }, { 32, 2 }, { 34, 2 }, { 37, 2 },
+        { 39, 2 }, { 42, 2 }, { 44, 2 }, { 46, 2 }, { 49, 2 }, { 51, 2 }, { 54, 2 },
+        { 56, 2 }, { 58, 2 },
+        // 3: Tom 1 — tom1 (hit, bow, edge)
+        { 38, 3 }, { 70, 3 }, { 93, 3 },
+        // 4: Tom 2 — tom2 (hit, edge, sidestick, alt, open)
+        { 41, 4 }, { 52, 4 }, { 62, 4 }, { 72, 4 }, { 75, 4 },
+        // 5: Floor Tom — tom3, tom3f, tom4, tom4f, all articulations
+        { 43, 5 }, { 45, 5 }, { 47, 5 }, { 50, 5 }, { 53, 5 }, { 55, 5 }, { 57, 5 },
+        { 60, 5 }, { 64, 5 }, { 65, 5 }, { 67, 5 }, { 71, 5 }, { 74, 5 }, { 76, 5 },
+        { 77, 5 }, { 78, 5 }, { 80, 5 }, { 81, 5 }, { 82, 5 }, { 87, 5 },
+        // 6: Ride — ride (hit, bow, edge)
+        { 35, 6 }, { 66, 6 }, { 91, 6 },
+        // 7: Crash L — crash1 (hit, bow, edge)
+        { 31, 7 }, { 61, 7 }, { 89, 7 },
+        // 8: Crash R — crash2 (hit) + crash3 (hit, bow, edge)
+        { 83, 8 }, { 33, 8 }, { 63, 8 }, { 90, 8 },
+        // 9: China — aux (hit) + extra, all articulations
+        { 95, 9 }, { 48, 9 }, { 59, 9 }, { 69, 9 }, { 79, 9 }, { 85, 9 },
+    };
+
+    juce::FileInputStream stream (midiFile);
+    if (!stream.openedOk()) { reset(); return; }
+
+    juce::MidiFile mf;
+    if (!mf.readFrom (stream)) { reset(); return; }
+    // Work in ticks — do NOT call convertTimestampTicksToSeconds()
+
+    const int timeFormat = mf.getTimeFormat();
+    if (timeFormat <= 0) { reset(); return; } // SMPTE not supported
+
+    // Read time signature and tempo from meta events
+    int    numerator   = 4, denominator = 4;
+    double secPerQuarterNote = 0.5; // default 120 BPM
+    for (int t = 0; t < mf.getNumTracks(); t++)
+    {
+        const auto* track = mf.getTrack (t);
+        if (!track) continue;
+        for (int i = 0; i < track->getNumEvents(); i++)
+        {
+            const auto& msg = track->getEventPointer (i)->message;
+            if (msg.isTimeSignatureMetaEvent())
+                msg.getTimeSignatureInfo (numerator, denominator);
+            else if (msg.isTempoMetaEvent())
+                secPerQuarterNote = msg.getTempoSecondsPerQuarterNote();
+        }
+    }
+
+    // Total pattern length in ticks
+    double maxTick = 0.0;
+    for (int t = 0; t < mf.getNumTracks(); t++)
+        if (const auto* track = mf.getTrack (t))
+            maxTick = juce::jmax (maxTick, track->getEndTime());
+    if (maxTick <= 0.0) { reset(); return; }
+
+    // Build notes with 0.0-1.0 relative position
+    std::vector<std::vector<MidiRollComponent::NoteEvent>> notes (10);
+    for (int t = 0; t < mf.getNumTracks(); t++)
+    {
+        const auto* track = mf.getTrack (t);
+        if (!track) continue;
+        for (int i = 0; i < track->getNumEvents(); i++)
+        {
+            const auto& msg = track->getEventPointer (i)->message;
+            if (!msg.isNoteOn()) continue;
+            auto it = noteMap.find (msg.getNoteNumber());
+            if (it == noteMap.end()) continue;
+            int    partIdx = it->second;
+            double relPos  = msg.getTimeStamp() / maxTick;
+            notes[(size_t)partIdx].push_back ({ relPos });
+        }
+    }
+
+    midiRollComponent.setPattern (notes, timeFormat, maxTick, numerator, denominator);
+
+    // MIDI duration in seconds = (totalTicks / ppq) × secondsPerQuarterNote
+    const double midiDurationSec = (maxTick / (double)timeFormat) * secPerQuarterNote;
+    midiRollComponent.setMidiDurationSec (midiDurationSec);
+}
+
+void TakefujiGrooveVaultAudioProcessorEditor::saveFavourites()
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                   .getChildFile ("TakefujiGrooveVault");
+    dir.createDirectory();
+    auto file = dir.getChildFile ("favorites.json");
+
+    juce::DynamicObject::Ptr obj = new juce::DynamicObject();
+    juce::Array<juce::var> arr;
+    for (const auto& id : favouriteIds) arr.add (id);
+    obj->setProperty ("favorites", arr);
+
+    file.replaceWithText (juce::JSON::toString (juce::var (obj.get())));
+}
+
+std::set<juce::String> TakefujiGrooveVaultAudioProcessorEditor::loadFavourites()
+{
+    auto file = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                    .getChildFile ("TakefujiGrooveVault")
+                    .getChildFile ("favorites.json");
+
+    std::set<juce::String> result;
+    if (!file.existsAsFile()) return result;
+
+    auto json = juce::JSON::parse (file.loadFileAsString());
+    if (auto* arr = json["favorites"].getArray())
+        for (const auto& v : *arr) result.insert (v.toString());
+
+    return result;
+}
+
+void TakefujiGrooveVaultAudioProcessorEditor::toggleFavourite (const juce::String& filename)
+{
+    if (favouriteIds.count (filename))
+        favouriteIds.erase (filename);
+    else
+        favouriteIds.insert (filename);
+
+    saveFavourites();
+
+    if (favoritesOnly)
+        applyFilters(); // re-filter (item may disappear from list)
+    else
+        patternList.updateContent(); // forces refreshComponentForRow() to update star icons
+}
+
 void TakefujiGrooveVaultAudioProcessorEditor::comboBoxChanged (juce::ComboBox* cb)
 {
     if (cb == &targetMapCombo) return; // keymap change doesn't need filter update
@@ -1072,6 +1676,15 @@ void TakefujiGrooveVaultAudioProcessorEditor::comboBoxChanged (juce::ComboBox* c
 
 void TakefujiGrooveVaultAudioProcessorEditor::applyFilters()
 {
+    // Remember the currently-selected pattern (by filename) so we can keep it
+    // selected after the list is rebuilt, instead of silently jumping to row 0.
+    juce::String previouslySelectedFilename;
+    {
+        const int prevRow = patternList.getSelectedRow();
+        if (prevRow >= 0 && prevRow < filteredPatterns.size())
+            previouslySelectedFilename = filteredPatterns[prevRow]->filename;
+    }
+
     filteredPatterns.clear();
 
     // source filter: map selected combo ID back to a source_id string
@@ -1083,6 +1696,7 @@ void TakefujiGrooveVaultAudioProcessorEditor::applyFilters()
             sourceSel = sourceFilterIds[idx];
     }
 
+    const auto searchText  = searchEditor.getText().toLowerCase().trim();
     const auto meterSel    = meterFilter.getText();
     const auto categorySel = categoryFilter.getText();
     const auto vibeSel     = vibeFilter.getText();
@@ -1093,6 +1707,8 @@ void TakefujiGrooveVaultAudioProcessorEditor::applyFilters()
 
     for (const auto& p : audioProcessor.getPatterns())
     {
+        if (favoritesOnly && !favouriteIds.count (p.filename)) continue;
+        if (searchText.isNotEmpty() && !p.display_name.toLowerCase().contains (searchText)) continue;
         if (sourceSel.isNotEmpty() && p.source_id != sourceSel) continue;
         if (meterSel != "All")
         {
@@ -1122,6 +1738,8 @@ void TakefujiGrooveVaultAudioProcessorEditor::applyFilters()
 
     patternList.updateContent();
     patternList.repaint();
+    countLabel.setText (juce::String (filteredPatterns.size()) + " patterns",
+                        juce::dontSendNotification);
 
     juce::Logger::writeToLog ("[GrooveVault] applyFilters: " + juce::String (filteredPatterns.size())
                               + " results, currentRow=" + juce::String (patternList.getSelectedRow()));
@@ -1130,18 +1748,39 @@ void TakefujiGrooveVaultAudioProcessorEditor::applyFilters()
     {
         // No results -- clear preview bar and disable PLAY
         selectedRowsChanged (-1);
+        return;
     }
-    else if (patternList.getSelectedRow() < 0 ||
-             patternList.getSelectedRow() >= filteredPatterns.size())
+
+    // Try to keep the same pattern selected in the rebuilt list.
+    int newRow = -1;
+    if (previouslySelectedFilename.isNotEmpty())
     {
-        // No valid selection -- auto-select first row so PLAY is immediately usable.
-        // selectRow() internally calls selectedRowsChanged() on the model.
-        patternList.selectRow (0, true /*don't scroll*/, true /*deselect others*/);
+        for (int i = 0; i < filteredPatterns.size(); ++i)
+        {
+            if (filteredPatterns[i]->filename == previouslySelectedFilename)
+            {
+                newRow = i;
+                break;
+            }
+        }
+    }
+
+    if (newRow >= 0)
+    {
+        // Still present -- restore selection silently, without touching the
+        // MIDI roll, transport bar, or playback state.
+        juce::SparseSet<int> sel;
+        sel.addRange (juce::Range<int> (newRow, newRow + 1));
+        patternList.setSelectedRows (sel, juce::dontSendNotification);
+        patternList.scrollToEnsureRowIsOnscreen (newRow);
+        patternList.repaint();
     }
     else
     {
-        // Valid selection retained -- just refresh the preview bar text.
-        selectedRowsChanged (patternList.getSelectedRow());
+        // Previously-selected pattern was filtered out (or nothing was
+        // selected) -- auto-select first row so PLAY is immediately usable.
+        // selectRow() internally calls selectedRowsChanged() on the model.
+        patternList.selectRow (0, true /*don't scroll*/, true /*deselect others*/);
     }
 }
 
