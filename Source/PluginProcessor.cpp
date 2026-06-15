@@ -65,6 +65,15 @@ juce::File TakefujiGrooveVaultAudioProcessor::getResourcesDirectory() const
     juce::Logger::writeToLog ("[GrooveVault] exe path = " + exeFile.getFullPathName());
     juce::Logger::writeToLog ("[GrooveVault] app path = " + appFile.getFullPathName());
 
+    // Mac: .app バンドル内 Contents/MacOS/ の隣 Contents/Resources/
+    juce::File mac = exeFile.getParentDirectory().getSiblingFile ("Resources");
+    logCand (mac);
+    if (mac.getChildFile ("metadata.json").existsAsFile())
+    {
+        juce::Logger::writeToLog ("[GrooveVault] resources found = " + mac.getFullPathName() + "  [Mac-bundle]");
+        cachedResult = mac; return cachedResult;
+    }
+
     // A0: Standalone -- Resources/ sits next to the exe
     juce::File a0 = exeFile.getParentDirectory().getChildFile ("Resources");
     logCand (a0);
@@ -595,12 +604,26 @@ void TakefujiGrooveVaultAudioProcessor::startPreviewFromUrl (const juce::String&
     if (filename.isEmpty()) return;
 
     juce::Logger::writeToLog ("[GrooveVault] startPreviewFromUrl: " + filename);
+
+    // Initialise the audio device now so it is ready when audio arrives.
+    // On first call this takes a moment; subsequent calls return immediately.
+    ensurePreviewDevice();
+
+    // Cache hit: same file already in memory — replay without downloading.
+    if (filename == cachedPreviewFilename && previewMemoryBlock.getSize() > 0)
+    {
+        juce::Logger::writeToLog ("[GrooveVault] startPreviewFromUrl: cache hit, replaying from memory");
+        startPreviewInMemory (previewMemoryBlock);
+        if (previewReadyCallback) previewReadyCallback (false);
+        return;
+    }
+
     previewLoading = true;
 
     juce::String urlStr  = juce::String (kPreviewBaseUrl) + filename;
     auto         alive   = processorAlive; // shared_ptr keeps flag valid after processor destroyed
 
-    juce::Thread::launch ([this, urlStr, alive]()
+    juce::Thread::launch ([this, urlStr, filename, alive]()
     {
         juce::Logger::writeToLog ("[GrooveVault] streamThread: GET " + urlStr);
 
@@ -628,9 +651,10 @@ void TakefujiGrooveVaultAudioProcessor::startPreviewFromUrl (const juce::String&
                                   + juce::String (block.getSize()) + " bytes");
         previewLoading = false;
 
-        juce::MessageManager::callAsync ([this, alive, blk = std::move (block)]() mutable
+        juce::MessageManager::callAsync ([this, alive, filename, blk = std::move (block)]() mutable
         {
             if (!alive->load()) return;
+            cachedPreviewFilename = filename;
             startPreviewInMemory (blk);
             if (previewReadyCallback) previewReadyCallback (false);
         });
