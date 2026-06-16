@@ -17,7 +17,7 @@
 namespace
 {
     constexpr const char* kAppTitle      = "Takefuji Groove Vault";
-    constexpr const char* kAppVersion    = "1.0.0";
+    constexpr const char* kAppVersion    = "1.1.0";
     constexpr const char* kGumroadUrl    = "https://takefujidrums.gumroad.com/l/GrooveVaultPro";
     constexpr const char* kGumroadApi    = "https://api.gumroad.com/v2/licenses/verify";
     constexpr const char* kGumroadProdId = "fTvKOXCmH89fkLFNGo4LIw==";
@@ -153,7 +153,7 @@ public:
                 juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
                     .withConnectionTimeoutMs (30000)
                     .withNumRedirectsToFollow (5)
-                    .withExtraHeaders ("User-Agent: TakefujiGrooveVault/1.0.0\r\n"));
+                    .withExtraHeaders ("User-Agent: TakefujiGrooveVault/1.1.0\r\n"));
 
         if (stream == nullptr || threadShouldExit()) { failed = true; return; }
 
@@ -251,7 +251,7 @@ static void checkForUpdates()
                 juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
                     .withConnectionTimeoutMs (10000)
                     .withNumRedirectsToFollow (3)
-                    .withExtraHeaders ("User-Agent: TakefujiGrooveVault/1.0.0\r\n"));
+                    .withExtraHeaders ("User-Agent: TakefujiGrooveVault/1.1.0\r\n"));
 
         if (stream == nullptr) return;
         auto parsed = juce::JSON::parse (stream->readEntireStreamAsString());
