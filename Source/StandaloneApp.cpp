@@ -139,8 +139,13 @@ public:
         setProgress (-1.0);
         setStatusMessage ("Connecting...");
 
+#if JUCE_WINDOWS
         destFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
                        .getChildFile ("TGVSetup_update.exe");
+#elif JUCE_MAC
+        destFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                       .getChildFile ("TGVUpdate_mac.zip");
+#endif
         destFile.deleteFile();
 
         auto stream = juce::URL (downloadUrl)
@@ -202,8 +207,8 @@ private:
 
 static void launchInstaller (const juce::File& file)
 {
-    // juce::Process::openDocument calls ShellExecuteW internally; the installer's
-    // UAC manifest triggers the elevation prompt automatically.
+#if JUCE_WINDOWS
+    // ShellExecuteW internally; NSIS UAC manifest triggers elevation automatically.
     if (juce::Process::openDocument (file.getFullPathName(), "/S"))
     {
         if (auto* app = juce::JUCEApplicationBase::getInstance())
@@ -211,6 +216,26 @@ static void launchInstaller (const juce::File& file)
         return;
     }
     juce::URL (kGumroadUrl).launchInDefaultBrowser();
+#elif JUCE_MAC
+    auto appDir = juce::File::getSpecialLocation (juce::File::currentApplicationFile)
+                      .getParentDirectory();
+    auto destApp = appDir.getChildFile ("TakefujiGrooveVault.app");
+
+    juce::String cmd;
+    cmd << "unzip -o " << file.getFullPathName().quoted()
+        << " -d /tmp/TGVUpdate/ && "
+        << "cp -R /tmp/TGVUpdate/TakefujiGrooveVault.app "
+        << destApp.getFullPathName().quoted() << " && "
+        << "open " << destApp.getFullPathName().quoted();
+
+    if (system (cmd.toRawUTF8()) == 0)
+    {
+        if (auto* app = juce::JUCEApplicationBase::getInstance())
+            app->systemRequestedQuit();
+        return;
+    }
+    juce::URL (kGumroadUrl).launchInDefaultBrowser();
+#endif
 }
 
 //==============================================================================
@@ -244,7 +269,11 @@ static void checkForUpdates()
             for (const auto& asset : *assets)
             {
                 auto name = asset["name"].toString();
+#if JUCE_WINDOWS
                 if (name.containsIgnoreCase ("Setup") && name.endsWithIgnoreCase (".exe"))
+#elif JUCE_MAC
+                if (name.endsWithIgnoreCase (".zip") && name.containsIgnoreCase ("mac"))
+#endif
                 {
                     installerUrl = asset["browser_download_url"].toString();
                     break;
