@@ -13,6 +13,7 @@
 #include <JuceHeader.h>
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 
+
 namespace
 {
     constexpr const char* kAppTitle      = "Takefuji Groove Vault";
@@ -69,7 +70,7 @@ static bool verifyLicenseOnline (const juce::String& key)
 }
 
 //==============================================================================
-// Update check
+// Update check — version comparison
 //==============================================================================
 
 static bool isNewerVersion (const juce::String& latest, const juce::String& current)
@@ -84,6 +85,137 @@ static bool isNewerVersion (const juce::String& latest, const juce::String& curr
     };
     return parse (latest) > parse (current);
 }
+
+//==============================================================================
+// Update check — settings helpers (skipped-version persistence)
+//==============================================================================
+
+static juce::File getSettingsFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+               .getChildFile ("TakefujiGrooveVault/settings.json");
+}
+
+static juce::String getSkippedVersion()
+{
+    auto f = getSettingsFile();
+    if (!f.existsAsFile()) return {};
+    return juce::JSON::parse (f)["skippedVersion"].toString();
+}
+
+static void saveSkippedVersion (const juce::String& version)
+{
+    auto f = getSettingsFile();
+    f.getParentDirectory().createDirectory();
+
+    juce::var existing;
+    if (f.existsAsFile()) existing = juce::JSON::parse (f);
+
+    auto* raw = existing.getDynamicObject();
+    juce::DynamicObject::Ptr obj = raw ? raw : new juce::DynamicObject();
+    obj->setProperty ("skippedVersion", version);
+    f.replaceWithText (juce::JSON::toString (juce::var (obj.get()), true));
+}
+
+//==============================================================================
+// Update check — installer download (ThreadWithProgressWindow, async via launchThread)
+//
+// JUCE_MODAL_LOOPS_PERMITTED defaults to 0 on desktop, so runThread() is
+// unavailable. We use launchThread() + threadComplete() instead.
+//==============================================================================
+
+class InstallerDownloadJob : public juce::ThreadWithProgressWindow
+{
+public:
+    // onDone(true, file) on success; onDone(false, {}) on failure/cancel.
+    // The job self-deletes inside threadComplete().
+    InstallerDownloadJob (const juce::String& url,
+                          std::function<void (bool, juce::File)> onDone)
+        : juce::ThreadWithProgressWindow ("Downloading Update", true, true),
+          downloadUrl (url), callback (std::move (onDone)) {}
+
+    void run() override
+    {
+        setProgress (-1.0);
+        setStatusMessage ("Connecting...");
+
+        destFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                       .getChildFile ("TGVSetup_update.exe");
+        destFile.deleteFile();
+
+        auto stream = juce::URL (downloadUrl)
+            .createInputStream (
+                juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
+                    .withConnectionTimeoutMs (30000)
+                    .withNumRedirectsToFollow (5)
+                    .withExtraHeaders ("User-Agent: TakefujiGrooveVault/1.0.0\r\n"));
+
+        if (stream == nullptr || threadShouldExit()) { failed = true; return; }
+
+        setStatusMessage ("Downloading...");
+        const juce::int64 total = stream->getTotalLength();
+
+        juce::FileOutputStream out (destFile);
+        if (!out.openedOk()) { failed = true; return; }
+
+        constexpr int kBuf = 65536;
+        juce::HeapBlock<char> buf (kBuf);
+        juce::int64 received = 0;
+
+        while (!stream->isExhausted() && !threadShouldExit())
+        {
+            int n = stream->read (buf, kBuf);
+            if (n <= 0) break;
+            out.write (buf, (size_t) n);
+            received += n;
+            if (total > 0)
+                setProgress ((double) received / (double) total);
+        }
+
+        out.flush();
+
+        if (threadShouldExit()) { destFile.deleteFile(); failed = true; return; }
+        failed = (destFile.getSize() == 0);
+    }
+
+    // Called on the message thread when the thread finishes or cancel is pressed.
+    void threadComplete (bool userPressedCancel) override
+    {
+        bool ok = !userPressedCancel && !failed && destFile.getSize() > 0;
+        auto file = ok ? destFile : juce::File{};
+        if (callback) callback (ok, file);
+        delete this;
+    }
+
+private:
+    juce::String downloadUrl;
+    juce::File   destFile;
+    bool         failed = false;
+    std::function<void (bool, juce::File)> callback;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (InstallerDownloadJob)
+};
+
+//==============================================================================
+// Update check — silent install then quit, or Gumroad fallback
+//==============================================================================
+
+static void launchInstaller (const juce::File& file)
+{
+    // juce::Process::openDocument calls ShellExecuteW internally; the installer's
+    // UAC manifest triggers the elevation prompt automatically.
+    if (juce::Process::openDocument (file.getFullPathName(), "/S"))
+    {
+        if (auto* app = juce::JUCEApplicationBase::getInstance())
+            app->systemRequestedQuit();
+        return;
+    }
+    juce::URL (kGumroadUrl).launchInDefaultBrowser();
+}
+
+//==============================================================================
+// Update check — background fetch + dialog flow
+//==============================================================================
 
 static void checkForUpdates()
 {
@@ -103,22 +235,72 @@ static void checkForUpdates()
         auto tagName = parsed["tag_name"].toString();
         auto body    = parsed["body"].toString();
         if (tagName.isEmpty() || !isNewerVersion (tagName, kAppVersion)) return;
+        if (tagName == getSkippedVersion()) return;
 
-        juce::MessageManager::callAsync ([tagName, body]()
+        // Find the Windows installer asset
+        juce::String installerUrl;
+        if (auto* assets = parsed["assets"].getArray())
+        {
+            for (const auto& asset : *assets)
+            {
+                auto name = asset["name"].toString();
+                if (name.containsIgnoreCase ("Setup") && name.endsWithIgnoreCase (".exe"))
+                {
+                    installerUrl = asset["browser_download_url"].toString();
+                    break;
+                }
+            }
+        }
+
+        juce::MessageManager::callAsync ([tagName, body, installerUrl]()
         {
             auto* aw = new juce::AlertWindow (
                 "Update Available: " + tagName,
                 body.substring (0, 800),
                 juce::MessageBoxIconType::InfoIcon);
-            aw->addButton ("Get Update", 1);
-            aw->addButton ("Later",      0);
+            aw->addButton ("Update Now",        1);
+            aw->addButton ("Later",             0);
+            aw->addButton ("Skip This Version", 2);
             aw->enterModalState (true,
-                juce::ModalCallbackFunction::create ([] (int result)
+                juce::ModalCallbackFunction::create ([tagName, installerUrl] (int result)
                 {
-                    if (result == 1)
+                    if (result == 2) { saveSkippedVersion (tagName); return; }
+                    if (result != 1) return; // "Later" — do nothing
+
+                    if (installerUrl.isEmpty())
+                    {
                         juce::URL (kGumroadUrl).launchInDefaultBrowser();
+                        return;
+                    }
+
+                    // launchThread is used (not runThread) because
+                    // JUCE_MODAL_LOOPS_PERMITTED defaults to 0 on desktop.
+                    // InstallerDownloadJob self-deletes inside threadComplete().
+                    (new InstallerDownloadJob (installerUrl, [] (bool ok, juce::File file)
+                    {
+                        if (!ok || !file.existsAsFile())
+                        {
+                            juce::URL (kGumroadUrl).launchInDefaultBrowser();
+                            return;
+                        }
+
+                        // Confirm install
+                        auto* confirmAw = new juce::AlertWindow (
+                            "Ready to Install",
+                            "The update has been downloaded.\n"
+                            "The app will close and the installer will run silently.",
+                            juce::MessageBoxIconType::QuestionIcon);
+                        confirmAw->addButton ("Install", 1);
+                        confirmAw->addButton ("Cancel",  0);
+                        confirmAw->enterModalState (true,
+                            juce::ModalCallbackFunction::create ([file] (int r)
+                            {
+                                if (r == 1) launchInstaller (file);
+                            }),
+                            true);
+                    }))->launchThread();
                 }),
-                true /* deleteWhenDismissed */);
+                true);
         });
     });
 }
