@@ -17,7 +17,7 @@
 namespace
 {
     constexpr const char* kAppTitle      = "Takefuji Groove Vault";
-    constexpr const char* kAppVersion    = "1.1.0";
+    constexpr const char* kAppVersion    = "1.1.1";
     constexpr const char* kGumroadUrl    = "https://takefujidrums.gumroad.com/l/GrooveVaultPro";
     constexpr const char* kGumroadApi    = "https://api.gumroad.com/v2/licenses/verify";
     constexpr const char* kGumroadProdId = "fTvKOXCmH89fkLFNGo4LIw==";

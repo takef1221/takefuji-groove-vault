@@ -1439,13 +1439,24 @@ void TakefujiGrooveVaultAudioProcessorEditor::populateKeyMapCombos()
     targetMapCombo.setSelectedId (1, juce::dontSendNotification);
 }
 
-// Returns the index of the BFD3 map (always the source).
-static int findBfd3Index (const juce::Array<KeyMapEntry>& maps)
+// Returns the index of the source (BFD3) map using a priority chain:
+// 1. role == "source"  2. id == "bfd3"  3. filename == "bfd3.json"
+// 4. name contains "BFD3"  5. returns -1 (not found)
+static int findSourceIndex (const juce::Array<KeyMapEntry>& maps)
 {
     for (int i = 0; i < maps.size(); ++i)
-        if (maps[i].name.equalsIgnoreCase ("BFD3"))
+        if (maps[i].role.equalsIgnoreCase ("source"))
             return i;
-    return 0;
+    for (int i = 0; i < maps.size(); ++i)
+        if (maps[i].id.equalsIgnoreCase ("bfd3"))
+            return i;
+    for (int i = 0; i < maps.size(); ++i)
+        if (maps[i].sourceFileName.equalsIgnoreCase ("bfd3.json"))
+            return i;
+    for (int i = 0; i < maps.size(); ++i)
+        if (maps[i].name.containsIgnoreCase ("BFD3"))
+            return i;
+    return -1;
 }
 
 juce::File TakefujiGrooveVaultAudioProcessorEditor::getFileToDrag (const juce::File& originalMidi)
@@ -1454,10 +1465,20 @@ juce::File TakefujiGrooveVaultAudioProcessorEditor::getFileToDrag (const juce::F
     if (maps.isEmpty() || !originalMidi.existsAsFile())
         return originalMidi;
 
-    int srcIdx = findBfd3Index (maps);
-    int dstIdx = juce::jlimit (0, maps.size() - 1, targetMapCombo.getSelectedId() - 1);
+    int srcIdx = findSourceIndex (maps);
+    if (srcIdx < 0)
+    {
+        juce::Logger::writeToLog ("[GrooveVault] ERROR: source(BFD3) keymap not found - conversion skipped");
+        return originalMidi;
+    }
+    juce::Logger::writeToLog ("[GrooveVault] findSourceIndex: srcIdx=" + juce::String (srcIdx)
+                              + "  name='" + maps[srcIdx].name + "'");
 
-    // TARGET = BFD3 means no conversion
+    int dstIdx = juce::jlimit (0, maps.size() - 1, targetMapCombo.getSelectedId() - 1);
+    juce::Logger::writeToLog ("[GrooveVault] getFileToDrag: dstIdx=" + juce::String (dstIdx)
+                              + "  name='" + maps[dstIdx].name + "'");
+
+    // SOURCE selected as target = no conversion needed
     if (srcIdx == dstIdx)
         return originalMidi;
 
@@ -1474,7 +1495,15 @@ void TakefujiGrooveVaultAudioProcessorEditor::openKeyMapEditor()
         return;
     }
 
-    int srcIdx = findBfd3Index (maps);
+    int srcIdx = findSourceIndex (maps);
+    if (srcIdx < 0)
+    {
+        juce::Logger::writeToLog ("[GrooveVault] ERROR: source(BFD3) keymap not found - cannot open editor");
+        juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+            "Source Keymap Not Found",
+            "No keymap with role=\"source\" was found. Cannot open editor.", "OK", this);
+        return;
+    }
     int dstIdx = juce::jlimit (0, maps.size() - 1, targetMapCombo.getSelectedId() - 1);
 
     auto* content = new KeyMapEditorContent (audioProcessor, srcIdx, dstIdx);

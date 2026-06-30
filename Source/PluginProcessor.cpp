@@ -238,6 +238,8 @@ KeyMapEntry KeyMapEntry::fromJSON (const juce::var& json)
 {
     KeyMapEntry entry;
     entry.name = json["name"].toString();
+    entry.id   = json["id"].toString();
+    entry.role = json["role"].toString();
 
     // --- note_to_part section (primary format) ---
     if (auto* ntp = json["note_to_part"].getDynamicObject())
@@ -350,6 +352,7 @@ void TakefujiGrooveVaultAudioProcessor::loadKeymaps()
 
             auto entry = KeyMapEntry::fromJSON (parsed);
             entry.builtIn = true;
+            entry.sourceFileName = f.getFileName();
 
             // JUCE ComboBox::addItem silently skips items with empty text.
             // Use the filename (without extension) as a fallback so the map
@@ -363,6 +366,8 @@ void TakefujiGrooveVaultAudioProcessor::loadKeymaps()
             juce::Logger::writeToLog ("[GrooveVault]   srcNotes=" + juce::String (entry.srcNotes.size())
                                       + "  dstKeys=" + juce::String (entry.dstKeys.size())
                                       + "  name='" + entry.name + "'"
+                                      + "  id='" + entry.id + "'"
+                                      + "  role='" + entry.role + "'"
                                       + "  isEmpty=" + (entry.isEmpty() ? "YES" : "NO"));
 
             if (!entry.isEmpty())
@@ -460,6 +465,12 @@ juce::File TakefujiGrooveVaultAudioProcessor::createConvertedMidiFile (
                 if (srcMap.getInfoForNote (srcNote, part, artic))
                 {
                     int destNote = dstMap.getNoteForPartArtic (part, artic);
+                    if (msg.isNoteOn())
+                        juce::Logger::writeToLog ("[CONV] src=" + juce::String(srcNote)
+                            + " part=" + part + " artic=" + artic
+                            + " -> key=\"" + part + "_" + artic + "\""
+                            + " -> dst=" + juce::String(destNote)
+                            + " -> out=" + juce::String(destNote >= 0 ? destNote : srcNote));
                     if (destNote >= 0 && destNote != srcNote)
                     {
                         double ts = msg.getTimeStamp();
@@ -469,6 +480,12 @@ juce::File TakefujiGrooveVaultAudioProcessor::createConvertedMidiFile (
                             msg = juce::MidiMessage::noteOff (msg.getChannel(), destNote, msg.getVelocity());
                         msg.setTimeStamp (ts);
                     }
+                }
+                else
+                {
+                    if (msg.isNoteOn())
+                        juce::Logger::writeToLog ("[CONV] src=" + juce::String(srcNote)
+                            + " -> NOT IN SRCMAP (passthrough)");
                 }
                 // Notes not in the source map pass through unchanged
             }

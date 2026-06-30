@@ -38,6 +38,9 @@ struct PatternInfo
 struct KeyMapEntry
 {
     juce::String name;
+    juce::String id;
+    juce::String role;
+    juce::String sourceFileName;
     bool builtIn = false;
 
     // note_to_part: source note -> part / artic
