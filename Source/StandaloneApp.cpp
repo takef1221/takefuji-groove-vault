@@ -17,12 +17,24 @@
 namespace
 {
     constexpr const char* kAppTitle      = "Takefuji Groove Vault";
-    constexpr const char* kAppVersion    = "1.1.1";
+    constexpr const char* kAppVersion    = "1.1.2";
     constexpr const char* kGumroadUrl    = "https://takefujidrums.gumroad.com/l/GrooveVaultPro";
     constexpr const char* kGumroadApi    = "https://api.gumroad.com/v2/licenses/verify";
     constexpr const char* kGumroadProdId = "fTvKOXCmH89fkLFNGo4LIw==";
     constexpr const char* kGithubApi     =
         "https://api.github.com/repos/takef1221/takefuji-groove-vault/releases/latest";
+}
+
+//==============================================================================
+// Debug log helper — appends a timestamped line to %TEMP%\TGVUpdate_debug.log
+//==============================================================================
+
+static void tgvLog (const juce::String& msg)
+{
+    auto logFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                       .getChildFile ("TGVUpdate_debug.log");
+    auto now = juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H:%M:%S");
+    logFile.appendText ("[" + now + "] " + msg + "\n", false, false, nullptr);
 }
 
 //==============================================================================
@@ -136,6 +148,7 @@ public:
 
     void run() override
     {
+        tgvLog ("InstallerDownloadJob::run() START");
         setProgress (-1.0);
         setStatusMessage ("Connecting...");
 
@@ -146,6 +159,7 @@ public:
         destFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
                        .getChildFile ("TGVUpdate_mac.zip");
 #endif
+        tgvLog ("InstallerDownloadJob::run() destFile = " + destFile.getFullPathName());
         destFile.deleteFile();
 
         auto stream = juce::URL (downloadUrl)
@@ -181,6 +195,8 @@ public:
 
         if (threadShouldExit()) { destFile.deleteFile(); failed = true; return; }
         failed = (destFile.getSize() == 0);
+        tgvLog ("InstallerDownloadJob::run() DONE  size=" + juce::String (destFile.getSize())
+                + "  failed=" + (failed ? "true" : "false"));
     }
 
     // Called on the message thread when the thread finishes or cancel is pressed.
@@ -208,13 +224,21 @@ private:
 static void launchInstaller (const juce::File& file)
 {
 #if JUCE_WINDOWS
-    // ShellExecuteW internally; NSIS UAC manifest triggers elevation automatically.
-    if (juce::Process::openDocument (file.getFullPathName(), "/S"))
+    tgvLog ("launchInstaller() START  path=" + file.getFullPathName());
+    tgvLog ("launchInstaller()  exists=" + juce::String (file.existsAsFile() ? "true" : "false")
+            + "  size=" + juce::String (file.getSize()));
+
+    bool opened = juce::Process::openDocument (file.getFullPathName(), "/S");
+    tgvLog ("launchInstaller()  openDocument returned " + juce::String (opened ? "TRUE" : "FALSE"));
+
+    if (opened)
     {
+        tgvLog ("launchInstaller()  -> branch: openDocument SUCCESS, calling systemRequestedQuit()");
         if (auto* app = juce::JUCEApplicationBase::getInstance())
             app->systemRequestedQuit();
         return;
     }
+    tgvLog ("launchInstaller()  -> branch: openDocument FAILED, opening Gumroad browser fallback");
     juce::URL (kGumroadUrl).launchInDefaultBrowser();
 #elif JUCE_MAC
     auto appDir = juce::File::getSpecialLocation (juce::File::currentApplicationFile)
@@ -555,11 +579,13 @@ public:
 
     void systemRequestedQuit() override
     {
+        tgvLog ("systemRequestedQuit() called");
         if (mainWindow != nullptr)
             mainWindow->pluginHolder->savePluginState();
 
         if (juce::ModalComponentManager::getInstance()->cancelAllModalComponents())
         {
+            tgvLog ("systemRequestedQuit()  modal components found, retrying in 100ms");
             juce::Timer::callAfterDelay (100, []
             {
                 if (auto* app = juce::JUCEApplicationBase::getInstance())
@@ -568,6 +594,7 @@ public:
         }
         else
         {
+            tgvLog ("systemRequestedQuit()  -> quit()");
             quit();
         }
     }
